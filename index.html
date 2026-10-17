@@ -1,0 +1,1969 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>E-Com Pulse DZ Pro - النظام الشامل لإدارة الطلبيات والربط البرمجي API</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#eff6ff',
+                            100: '#dbeafe',
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                            700: '#1d4ed8',
+                            900: '#1e3a8a',
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Cairo', 'Segoe UI', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- React & ReactDOM CDN -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Babel standalone for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- SheetJS: real XLSX export -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <!-- Font Awesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap');
+        body { font-family: 'Cairo', 'Segoe UI', sans-serif; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #0f172a; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+        @media print {
+            .no-print { display: none !important; }
+            .print-only { display: block !important; }
+            body { background: white !important; color: black !important; }
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 antialiased selection:bg-blue-600 selection:text-white min-h-screen">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // ===== حماية استدعاءات /api/ (GitHub Pages لا يشغّل server.js) =====
+        // على GitHub Pages يعيد أي طلب /api/... صفحة HTML (404) بدل JSON، فيظهر الخطأ "Unexpected token '<'".
+        // هذا الغلاف يحوّل تلك الحالة إلى TypeError فتعرض الواجهة رسالة "السيرفر غير شغّال" الواضحة.
+        const IS_STATIC_HOST = /github\.io$|netlify\.app$|vercel\.app$|pages\.dev$/i.test(location.hostname) || location.protocol === 'file:';
+        const OFFLINE_HINT = IS_STATIC_HOST
+            ? 'أنت تفتح نسخة الاستضافة (GitHub Pages) وهي واجهة فقط بلا سيرفر. لربط Aranex شغّل start.bat على جهازك ثم افتح http://localhost:3000 واحفظ التوكن هناك.'
+            : 'السيرفر غير شغّال. شغّل start.bat (أو node server.js) ثم افتح http://localhost:3000';
+        (() => {
+            const nativeFetch = window.fetch.bind(window);
+            window.fetch = async (url, opts) => {
+                if (typeof url === 'string' && url.startsWith('/api/')) {
+                    const res = await nativeFetch(url, opts); // فشل الشبكة يبقى TypeError كما هو
+                    const ct = (res.headers.get('content-type') || '').toLowerCase();
+                    if (ct.includes('text/html')) throw new TypeError(OFFLINE_HINT);
+                    return res;
+                }
+                return nativeFetch(url, opts);
+            };
+        })();
+
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        // Currency Formatter Utility
+        const formatCurrency = (valInDZD, formatUnit = 'DZD') => {
+            if (formatUnit === 'CENTIMES') {
+                const centimes = valInDZD * 100;
+                if (Math.abs(centimes) >= 100000000) {
+                    return (centimes / 100000000).toFixed(2) + ' مليون سنتيم';
+                } else if (Math.abs(centimes) >= 100000) {
+                    return (centimes / 100000).toFixed(1) + ' ألف سنتيم';
+                }
+                return Math.round(centimes).toLocaleString('ar-DZ') + ' سنتيم';
+            }
+            return Math.round(valInDZD).toLocaleString('fr-FR') + ' د.ج';
+        };
+
+        // Initial Data Mock: Confirmators Team
+        const initialAgents = [
+            { id: 'ag-1', name: 'سارة العلمي', role: 'confirmator', paymentMode: 'per_delivered', monthlySalary: 0, phone: '0551234567', email: 'sara@ecompulse.dz', joinDate: '2025-11-15', commissionPerDelivered: 150, paidCommissions: 1500, payments: [], notes: 'ممتازة في إعادة الاتصال بالزبائن غير المجيبين.' },
+            { id: 'ag-2', name: 'أحمد بن علي', role: 'confirmator', paymentMode: 'per_confirmed', monthlySalary: 0, phone: '0662345678', email: 'ahmed@ecompulse.dz', joinDate: '2026-01-10', commissionPerDelivered: 150, paidCommissions: 0, payments: [], notes: 'متخصص في التأكيد السريع لولايات الوسط والشرق.' },
+            { id: 'ag-3', name: 'مريم بلقاسم', role: 'confirmator', paymentMode: 'per_delivered', monthlySalary: 0, phone: '0773456789', email: 'meriem@ecompulse.dz', joinDate: '2026-02-01', commissionPerDelivered: 150, paidCommissions: 500, payments: [], notes: 'دقيقة في تدوين الملاحظات والعناوين التفصيلية.' },
+        ];
+
+        // Initial Mock Products
+        const initialProducts = [
+            { id: 'prod-1', name: 'مرآة القمر المضيئة LED 70cm', sku: 'LUNE-LED-70', costPrice: 1500, sellingPrice: 4800, stock: 145 },
+            { id: 'prod-2', name: 'طاولة قهوة مودرن خشبي', sku: 'TABLE-WOOD-MD', costPrice: 3200, sellingPrice: 7900, stock: 48 },
+            { id: 'prod-3', name: 'منظم مكياج أكريليك فاخر', sku: 'ORG-ACRYL-01', costPrice: 900, sellingPrice: 2900, stock: 210 },
+        ];
+
+        // API Configurations Default State
+        const defaultApiConfigs = {
+            Aranex: { apiKey: '', token: '', active: false, label: 'Aranex (EcoTrack)' },
+            Yalidine: { apiKey: '', token: '', active: false, label: 'Yalidine Express' },
+            Aramex: { apiKey: '', token: '', active: false, label: 'Aramex Algeria' },
+            ZRExpress: { apiKey: '', token: '', active: false, label: 'ZR Express Logistics' }
+        };
+
+        // الولايات الـ 58 (الرمز - الاسم) — الرمز هو ما يُرسل إلى Aranex
+        const WILAYAS = ['01 - أدرار', '02 - الشلف', '03 - الأغواط', '04 - أم البواقي', '05 - باتنة', '06 - بجاية', '07 - بسكرة', '08 - بشار', '09 - البليدة', '10 - البويرة', '11 - تمنراست', '12 - تبسة', '13 - تلمسان', '14 - تيارت', '15 - تيزي وزو', '16 - الجزائر', '17 - الجلفة', '18 - جيجل', '19 - سطيف', '20 - سعيدة', '21 - سكيكدة', '22 - سيدي بلعباس', '23 - عنابة', '24 - قالمة', '25 - قسنطينة', '26 - المدية', '27 - مستغانم', '28 - المسيلة', '29 - معسكر', '30 - ورقلة', '31 - وهران', '32 - البيض', '33 - إليزي', '34 - برج بوعريريج', '35 - بومرداس', '36 - الطارف', '37 - تندوف', '38 - تيسمسيلت', '39 - الوادي', '40 - خنشلة', '41 - سوق أهراس', '42 - تيبازة', '43 - ميلة', '44 - عين الدفلى', '45 - النعامة', '46 - عين تموشنت', '47 - غرداية', '48 - غليزان', '49 - تيميمون', '50 - برج باجي مختار', '51 - أولاد جلال', '52 - بني عباس', '53 - عين صالح', '54 - عين قزام', '55 - تقرت', '56 - جانت', '57 - المغير', '58 - المنيعة'];
+        // توحيد الاسم القديم EcoTrack ← Aranex
+        const normCarrier = (c) => (!c || c === 'EcoTrack') ? 'Aranex' : c;
+
+        // Initial Mock Orders
+        const initialOrders = [
+            { id: 'ORD-1001', clientName: 'محمد أمين', phone: '0550123456', wilaya: '16 - الجزائر', address: 'باب الزوار, حي 8 مايو', product: 'مرآة القمر المضيئة LED 70cm', quantity: 1, totalAmount: 4800, status: 'LIVRE', confirmatorId: 'ag-1', confirmatorName: 'سارة العلمي', trackingCode: 'ECO-992101-DZ', deliveryCompany: 'EcoTrack', date: '2026-03-10', notes: 'تم الاستلام والتدقيق' },
+            { id: 'ORD-1002', clientName: 'كريمة بوعلام', phone: '0661987654', wilaya: '31 - وهران', address: 'حي الزيتون, وهران المركز', product: 'مرآة القمر المضيئة LED 70cm', quantity: 1, totalAmount: 4800, status: 'CONFIRMED', confirmatorId: 'ag-1', confirmatorName: 'سارة العلمي', trackingCode: '', deliveryCompany: 'EcoTrack', date: '2026-03-11', notes: 'تأكيد هاتفي مقترن بالطلب' },
+            { id: 'ORD-1003', clientName: 'عبد القادر شريف', phone: '0770554433', wilaya: '19 - سطيف', address: 'شارع البساتين', product: 'طاولة قهوة مودرن خشبي', quantity: 1, totalAmount: 7900, status: 'CONFIRMED', confirmatorId: 'ag-2', confirmatorName: 'أحمد بن علي', trackingCode: '', deliveryCompany: 'Yalidine', date: '2026-03-11', notes: 'جاهز للشحن المباشر' },
+            { id: 'ORD-1004', clientName: 'فاطمة الزهراء', phone: '0558112233', wilaya: '25 - قسنطينة', address: 'سيدي مبروك', product: 'منظم مكياج أكريليك فاخر', quantity: 2, totalAmount: 5800, status: 'RETOUR', confirmatorId: 'ag-3', confirmatorName: 'مريم بلقاسم', trackingCode: 'ECO-773412-DZ', deliveryCompany: 'EcoTrack', date: '2026-03-09', notes: 'الزبون لم يرد على الهاتف', returnReason: 'عدم الرد أثناء التوصيل' },
+            { id: 'ORD-1005', clientName: 'سمير خليل', phone: '0664332211', wilaya: '09 - البليدة', address: 'أولاد يعيش', product: 'مرآة القمر المضيئة LED 70cm', quantity: 1, totalAmount: 4800, status: 'NEW', confirmatorId: '', confirmatorName: 'غير معين', trackingCode: '', deliveryCompany: 'EcoTrack', date: '2026-03-12', notes: 'طلب جديد مسجل في المتجر' },
+            { id: 'ORD-1006', clientName: 'ياسين حيدر', phone: '0771998877', wilaya: '23 - عنابة', address: 'سيدي عمار', product: 'طاولة قهوة مودرن خشبي', quantity: 1, totalAmount: 7900, status: 'NEW', confirmatorId: '', confirmatorName: 'غير معين', trackingCode: '', deliveryCompany: 'Yalidine', date: '2026-03-12', notes: 'طلب جديد مسجل في المتجر' },
+        ];
+
+        function App() {
+            // Load state from localStorage or default
+            const [apiConfigs, setApiConfigs] = useState(() => {
+                const saved = localStorage.getItem('ecom_pulse_api_configs');
+                return saved ? JSON.parse(saved) : defaultApiConfigs;
+            });
+            const [orders, setOrders] = useState(() => {
+                const saved = localStorage.getItem('ecom_pulse_orders');
+                return (saved ? JSON.parse(saved) : initialOrders).map(o => ({ ...o, deliveryCompany: normCarrier(o.deliveryCompany) }));
+            });
+            const [agents, setAgents] = useState(() => {
+                const saved = localStorage.getItem('ecom_pulse_agents');
+                return saved ? JSON.parse(saved) : initialAgents;
+            });
+            const [products, setProducts] = useState(() => {
+                const saved = localStorage.getItem('ecom_pulse_products');
+                return saved ? JSON.parse(saved) : initialProducts;
+            });
+            const [auditLog, setAuditLog] = useState(() => {
+                const saved = localStorage.getItem('ecom_pulse_audit_log');
+                return saved ? JSON.parse(saved) : [];
+            });
+            const [aranexStatus, setAranexStatus] = useState(null);
+            const [metaReadOnly, setMetaReadOnly] = useState({ adAccountId: '' });
+
+            // إضافات من نسخة التعديل: المصاريف وتحليلات Meta Ads
+            const [expenses, setExpenses] = useState(() => {
+                const saved = localStorage.getItem('ecom_pulse_expenses');
+                return saved ? JSON.parse(saved) : [
+                    { id: 1, category: 'رواتب', title: 'راتب عامل الورشة - أحمد', amount: 35000, date: '2026-09-01' },
+                    { id: 2, category: 'مواد أولية', title: 'شراء 500 كرتون تغليف', amount: 45000, date: '2026-09-05' },
+                    { id: 3, category: 'محتوى', title: 'إنتاج 15 فيديو إشهاري', amount: 15000, date: '2026-09-10' }
+                ];
+            });
+            const [newExpense, setNewExpense] = useState({ category: 'مواد أولية', title: '', amount: '' });
+            const [metaSettings, setMetaSettings] = useState(() => {
+                const saved = localStorage.getItem('ecom_pulse_meta_settings');
+                return saved ? JSON.parse(saved) : { pixelId: '', accessToken: '' };
+            });
+            const [aiAnalysis, setAiAnalysis] = useState(null);
+
+            const [activeTab, setActiveTab] = useState('orders'); // orders, dispatch, api_settings, agents, financials, inventory, expenses, meta_ai
+            const [displayUnit, setDisplayUnit] = useState('DZD'); 
+            const [orderFilter, setOrderFilter] = useState('ALL');
+            const [searchQuery, setSearchQuery] = useState('');
+            const [selectedOrderIds, setSelectedOrderIds] = useState([]);
+
+            // Modals
+            const [isNewOrderModalOpen, setIsNewOrderModalOpen] = useState(false);
+            const [isEditOrderModalOpen, setIsEditOrderModalOpen] = useState(false);
+            const [editingOrder, setEditingOrder] = useState(null);
+            
+            const [isNewAgentModalOpen, setIsNewAgentModalOpen] = useState(false);
+            const [isEditAgentModalOpen, setIsEditAgentModalOpen] = useState(false);
+            const [editingAgent, setEditingAgent] = useState(null);
+
+            // Agent Profile Dossier Modal
+            const [selectedAgentDossier, setSelectedAgentDossier] = useState(null);
+
+            const [isBulkDispatchModalOpen, setIsBulkDispatchModalOpen] = useState(false);
+            const [bulkCarrier, setBulkCarrier] = useState('Aranex');
+
+            const [isPrintSlipModalOpen, setIsPrintSlipModalOpen] = useState(false);
+            const [ordersToPrint, setOrdersToPrint] = useState([]);
+
+            const [toastMessage, setToastMessage] = useState('');
+
+            // Forms
+            const [newOrder, setNewOrder] = useState({ clientName: '', phone: '', wilaya: '16 - الجزائر', address: '', product: initialProducts[0].name, quantity: 1, deliveryCompany: 'Aranex', commune: '' });
+            const [newAgent, setNewAgent] = useState({ name: '', phone: '', email: '', role: 'confirmator', paymentMode: 'per_delivered', monthlySalary: 0, commissionPerDelivered: 150, notes: '' });
+
+            // ===== ربط Aranex (EcoTrack) عبر السيرفر المحلي =====
+            const [communes, setCommunes] = useState([]);
+            const communesCache = useRef({});
+            const [isSyncing, setIsSyncing] = useState(false);
+            const aranexReady = !!(aranexStatus && aranexStatus.ok);
+            const isLinked = (key) => key === 'Aranex' ? aranexReady : !!(apiConfigs[key] && apiConfigs[key].active && apiConfigs[key].apiKey);
+
+            const checkAranex = async (silent) => {
+                try {
+                    setAranexStatus({ loading: true });
+                    const r = await fetch('/api/aranex/test');
+                    const d = await r.json();
+                    if (!r.ok || d.success === false) throw new Error(d.error || 'فشل الاتصال');
+                    setAranexStatus({ ok: true, message: 'الاتصال حقيقي وناجح — حساب Aranex (' + (d.baseUrl || '') + ') جاهز.' });
+                    return true;
+                } catch (err) {
+                    const offline = err instanceof TypeError;
+                    setAranexStatus({ ok: false, message: offline ? OFFLINE_HINT : err.message });
+                    if (!silent) showToast('❌ ' + (offline ? OFFLINE_HINT : err.message));
+                    return false;
+                }
+            };
+            useEffect(() => { checkAranex(true); }, []);
+
+            const loadCommunes = async (wilayaStr) => {
+                const code = parseInt(wilayaStr, 10);
+                if (!code) { setCommunes([]); return; }
+                if (communesCache.current[code]) { setCommunes(communesCache.current[code]); return; }
+                try {
+                    const r = await fetch('/api/aranex/communes?wilaya_id=' + code);
+                    const d = await r.json();
+                    const names = (d.communes || []).filter(c => !c.wilaya_id || Number(c.wilaya_id) === code).map(c => c.nom);
+                    communesCache.current[code] = names;
+                    setCommunes(names);
+                } catch (_) { setCommunes([]); }
+            };
+            useEffect(() => {
+                if (isNewOrderModalOpen) loadCommunes(newOrder.wilaya);
+                else if (isEditOrderModalOpen && editingOrder) loadCommunes(editingOrder.wilaya);
+            }, [isNewOrderModalOpen, isEditOrderModalOpen, newOrder.wilaya, editingOrder && editingOrder.wilaya]);
+
+            // مزامنة حالات الشحنات من Aranex (تسليم / رجوع)
+            const handleSyncAranex = async (silent) => {
+                const sent = orders.filter(o => o.trackingCode && normCarrier(o.deliveryCompany) === 'Aranex' && o.status === 'DISPATCHED');
+                if (!sent.length) { if (!silent) showToast('ℹ️ لا توجد شحنات مرسلة للمزامنة.'); return; }
+                try {
+                    setIsSyncing(true);
+                    const r = await fetch('/api/aranex/track', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trackings: sent.map(o => o.trackingCode) }) });
+                    const d = await r.json();
+                    if (!r.ok || d.success === false) throw new Error(d.error || 'فشلت المزامنة');
+                    let changed = 0;
+                    setOrders(prev => prev.map(o => {
+                        const st = d.statuses && d.statuses[o.trackingCode];
+                        if (!st || o.status !== 'DISPATCHED') return o;
+                        if (st.status !== 'DISPATCHED') changed++;
+                        return { ...o, status: st.status, carrierStatus: st.raw, carrierStatusDate: st.date, returnReason: st.status === 'RETOUR' ? (st.raw || 'مرتجع من Aranex') : o.returnReason };
+                    }));
+                    logAction('ARANEX_SYNC', { checked: sent.length, changed });
+                    if (!silent) showToast('🔄 تمت المزامنة: ' + changed + ' شحنة تغيّرت حالتها من أصل ' + sent.length);
+                } catch (err) { if (!silent) showToast('❌ ' + err.message); }
+                finally { setIsSyncing(false); }
+            };
+            useEffect(() => {
+                if (!aranexReady) return;
+                const t = setInterval(() => handleSyncAranex(true), 10 * 60 * 1000);
+                return () => clearInterval(t);
+            }, [aranexReady, orders]);
+
+            const handleCancelAranex = async (order) => {
+                if (!confirm('إلغاء الشحنة ' + order.trackingCode + ' لدى Aranex؟')) return;
+                try {
+                    const r = await fetch('/api/aranex/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tracking: order.trackingCode }) });
+                    const d = await r.json();
+                    if (!r.ok || d.success === false) throw new Error(d.error || 'تعذر الإلغاء');
+                    setOrders(prev => prev.map(o => o.id === order.id ? { ...o, status: 'CONFIRMED', trackingCode: '', apiStatus: '', apiMessage: '', carrierStatus: '' } : o));
+                    logAction('ARANEX_CANCEL', { id: order.id, tracking: order.trackingCode });
+                    showToast('🗑️ تم إلغاء الشحنة وإرجاع الطلب إلى حالة مؤكد.');
+                } catch (err) { showToast('❌ ' + err.message); }
+            };
+
+            // Sync to LocalStorage on updates
+            useEffect(() => {
+                localStorage.setItem('ecom_pulse_api_configs', JSON.stringify(apiConfigs));
+            }, [apiConfigs]);
+
+            useEffect(() => {
+                localStorage.setItem('ecom_pulse_orders', JSON.stringify(orders));
+            }, [orders]);
+
+            useEffect(() => {
+                localStorage.setItem('ecom_pulse_agents', JSON.stringify(agents));
+            }, [agents]);
+            useEffect(() => {
+                localStorage.setItem('ecom_pulse_products', JSON.stringify(products));
+            }, [products]);
+            useEffect(() => {
+                localStorage.setItem('ecom_pulse_audit_log', JSON.stringify(auditLog.slice(-500)));
+            }, [auditLog]);
+
+            useEffect(() => {
+                localStorage.setItem('ecom_pulse_expenses', JSON.stringify(expenses));
+            }, [expenses]);
+
+            useEffect(() => {
+                localStorage.setItem('ecom_pulse_meta_settings', JSON.stringify(metaSettings));
+            }, [metaSettings]);
+
+            // Core helpers
+            const logAction = (action, details = {}) => {
+                setAuditLog(prev => [...prev, { id: Date.now() + Math.random(), date: new Date().toISOString(), action, details }]);
+            };
+            const safeNum = (v) => Number(v || 0);
+            const roleLabels = { confirmator: 'موظف تأكيد', workshop: 'عامل ورشة', packer: 'عامل تغليف', warehouse: 'عامل مخزن', admin: 'مسؤول', other: 'موظف آخر' };
+            const paymentModeLabels = { monthly: 'راتب شهري', per_confirmed: 'على كل طلبية مؤكدة', per_delivered: 'على كل طلبية مستلمة' };
+            const getAgentEarned = (agent) => {
+                if (!agent) return 0;
+                if ((agent.paymentMode || 'per_delivered') === 'monthly') return safeNum(agent.monthlySalary);
+                const assigned = orders.filter(o => o.confirmatorId === agent.id);
+                const count = (agent.paymentMode || 'per_delivered') === 'per_confirmed'
+                    ? assigned.filter(o => ['CONFIRMED','DISPATCHED','LIVRE','RETOUR'].includes(o.status)).length
+                    : assigned.filter(o => o.status === 'LIVRE').length;
+                return count * safeNum(agent.commissionPerDelivered);
+            };
+            const getAgentRemaining = (agent) => Math.max(0, getAgentEarned(agent) - safeNum(agent.paidCommissions));
+
+            // Toast Alert Handler
+            const showToast = (msg) => {
+                setToastMessage(msg);
+                setTimeout(() => setToastMessage(''), 3500);
+            };
+
+            const handleAddExpense = (e) => {
+                e.preventDefault();
+                const amount = parseFloat(newExpense.amount);
+                if (!newExpense.title.trim() || !amount || amount <= 0) {
+                    showToast('⚠️ أدخل وصف المصروف والمبلغ بشكل صحيح.');
+                    return;
+                }
+                setExpenses(prev => [...prev, {
+                    id: Date.now(),
+                    category: newExpense.category,
+                    title: newExpense.title.trim(),
+                    amount,
+                    date: new Date().toISOString().split('T')[0]
+                }]);
+                setNewExpense({ category: 'مواد أولية', title: '', amount: '' });
+                showToast('✅ تمت إضافة المصروف وحفظه.');
+            };
+
+            const handleDeleteExpense = (id) => {
+                setExpenses(prev => prev.filter(exp => exp.id !== id));
+                showToast('🗑️ تم حذف المصروف.');
+            };
+
+            const runAiMetaAnalysis = () => {
+                if (!metaSettings.pixelId || !metaSettings.accessToken) {
+                    showToast('⚠️ أدخل Meta Pixel ID وAccess Token أولاً.');
+                    return;
+                }
+                setAiAnalysis('جاري تحليل بيانات Meta Ads...');
+                setTimeout(() => {
+                    const delivered = orders.filter(o => o.status === 'LIVRE').length;
+                    const confirmed = orders.filter(o => ['CONFIRMED','DISPATCHED','LIVRE','RETOUR'].includes(o.status)).length;
+                    const deliveryRate = confirmed ? ((delivered / confirmed) * 100).toFixed(1) : '0.0';
+                    setAiAnalysis({
+                        cpaStatus: 'تم تجهيز التحليل التجريبي — اربط Backend/Meta Graph API لقراءة الأرقام الحقيقية.',
+                        deliveryCorrelation: `${deliveryRate}% من الطلبات المؤكدة وصلت إلى حالة Livré.`,
+                        recommendation: delivered > 0
+                            ? 'ركّز الميزانية على الحملات والمنتجات التي تحقق أعلى عدد من الطلبات المستلمة، وقارن CPA مع هامش الربح قبل رفع الميزانية.'
+                            : 'لا توجد طلبات Livré كافية لإصدار توصية مالية موثوقة بعد.'
+                    });
+                }, 800);
+            };
+
+            const filteredOrders = useMemo(() => {
+                return orders.filter(o => {
+                    const matchesStatus = orderFilter === 'ALL' || o.status === orderFilter;
+                    const matchesSearch = searchQuery === '' || 
+                        o.clientName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        o.phone.includes(searchQuery) ||
+                        o.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        o.wilaya.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        o.product.toLowerCase().includes(searchQuery.toLowerCase());
+                    return matchesStatus && matchesSearch;
+                });
+            }, [orders, orderFilter, searchQuery]);
+
+            // Selection Helpers
+            const handleSelectAllOrders = (e) => {
+                if (e.target.checked) {
+                    setSelectedOrderIds(filteredOrders.map(o => o.id));
+                } else {
+                    setSelectedOrderIds([]);
+                }
+            };
+
+            const handleToggleSelectOrder = (id) => {
+                setSelectedOrderIds(prev => 
+                    prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
+                );
+            };
+
+            const renderStatusBadge = (status) => {
+                switch(status) {
+                    case 'NEW':
+                        return <span className="bg-amber-500/20 text-amber-400 border border-amber-500/40 px-2.5 py-1 rounded-full text-xs font-bold flex items-center gap-1 w-max"><i className="fa-solid fa-clock-rotate-left"></i> جديد</span>;
+                    case 'CONFIRMED':
+                        return <span className="bg-blue-500/20 text-blue-400 border border-blue-500/40 px-2.5 py-1 rounded-full text-xs font-bold flex items-center gap-1 w-max"><i className="fa-solid fa-check-circle"></i> مؤكد (جاهز للشحن)</span>;
+                    case 'DISPATCHED':
+                        return <span className="bg-purple-500/20 text-purple-400 border border-purple-500/40 px-2.5 py-1 rounded-full text-xs font-bold flex items-center gap-1 w-max"><i className="fa-solid fa-truck-fast"></i> مرسل للتوصيل</span>;
+                    case 'LIVRE':
+                        return <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 px-2.5 py-1 rounded-full text-xs font-bold flex items-center gap-1 w-max"><i className="fa-solid fa-box-open"></i> تم الاستلام (Livré)</span>;
+                    case 'RETOUR':
+                        return <span className="bg-rose-500/20 text-rose-400 border border-rose-500/40 px-2.5 py-1 rounded-full text-xs font-bold flex items-center gap-1 w-max"><i className="fa-solid fa-rotate-left"></i> مرتجع (Retour)</span>;
+                    case 'CANCELED':
+                        return <span className="bg-slate-500/20 text-slate-400 border border-slate-500/40 px-2.5 py-1 rounded-full text-xs font-bold flex items-center gap-1 w-max"><i className="fa-solid fa-xmark"></i> ملغى</span>;
+                    default:
+                        return status;
+                }
+            };
+
+            const handleAssignConfirmator = (orderId, agentId) => {
+                const agent = agents.find(a => a.id === agentId);
+                setOrders(prev => prev.map(o => {
+                    if (o.id === orderId) {
+                        return { 
+                            ...o, 
+                            confirmatorId: agentId, 
+                            confirmatorName: agent ? agent.name : 'غير معين',
+                            status: o.status === 'NEW' ? 'CONFIRMED' : o.status
+                        };
+                    }
+                    return o;
+                }));
+                showToast(`تم تعيين الطلب ${orderId} للموظف ${agent ? agent.name : ''} وتأكيده.`);
+            };
+
+            const handleUpdateOrderStatus = (orderId, newStatus) => {
+                setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: newStatus } : o));
+                showToast(`تم تعديل حالة الطلبية ${orderId} إلى ${newStatus}`);
+            };
+
+            // Explicitly Save API Configurations
+            const handleSaveApiConfig = async (carrierKey) => {
+                const cfg = apiConfigs[carrierKey];
+                if (carrierKey === 'Aranex') {
+                    const token = (cfg.apiKey || '').trim();
+                    if (!token) { showToast(aranexReady ? 'ℹ️ التوكن محفوظ في السيرفر مسبقاً. الصق توكناً جديداً فقط إذا أردت تغييره.' : '⚠️ الصق توكن Aranex أولاً.'); return; }
+                    try {
+                        const r = await fetch('/api/aranex/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) });
+                        const d = await r.json();
+                        if (!r.ok || d.success === false) throw new Error(d.error || 'رُفض التوكن');
+                        setApiConfigs(prev => ({ ...prev, Aranex: { ...prev.Aranex, apiKey: '', token: '', active: true } }));
+                        await checkAranex(true);
+                        logAction('ARANEX_TOKEN_SAVED');
+                        showToast('✅ تم التحقق من التوكن وحفظه في السيرفر (لا يُخزَّن في المتصفح).');
+                    } catch (err) { showToast('❌ ' + (err instanceof TypeError ? OFFLINE_HINT : err.message)); }
+                    return;
+                }
+                if (!cfg.apiKey.trim()) {
+                    showToast(`⚠️ يرجى إدخال API Key الخاص بشركة ${cfg.label} أولاً.`);
+                    return;
+                }
+                localStorage.setItem('ecom_pulse_api_configs', JSON.stringify(apiConfigs));
+                showToast(`✅ تم حفظ وتأكيد مفاتيح الـ API لـ ${cfg.label} بنجاح وحفظها بالمظام!`);
+            };
+
+            // Test Connection
+            const handleTestApiConnection = async (carrierKey) => {
+                const cfg = apiConfigs[carrierKey];
+                if (carrierKey === 'Aranex') {
+                    const ok = await checkAranex(false);
+                    if (ok) { setApiConfigs(prev => ({ ...prev, Aranex: { ...prev.Aranex, active: true } })); logAction('ARANEX_TEST_SUCCESS'); showToast('✅ تم اختبار Aranex فعلياً بنجاح.'); }
+                    return;
+                }
+                if (false) {
+                    try {
+                        setAranexStatus({ loading: true });
+                        const r = await fetch('/api/aranex/test');
+                        const data = await r.json();
+                        if (!r.ok || data.success === false) throw new Error(data.error || 'فشل الاتصال');
+                        setAranexStatus({ ok: true, message: 'الاتصال الحقيقي ناجح — حساب Aranex جاهز.' });
+                        setApiConfigs(prev => ({ ...prev, Aranex: { ...prev.Aranex, active: true } }));
+                        logAction('ARANEX_TEST_SUCCESS');
+                        showToast('✅ تم اختبار Aranex فعلياً بنجاح.');
+                    } catch (err) {
+                        setAranexStatus({ ok: false, message: err.message });
+                        showToast('❌ فشل اتصال Aranex: ' + err.message);
+                    }
+                    return;
+                }
+                if (!cfg.apiKey || cfg.apiKey.trim().length < 5) {
+                    showToast(`❌ فشل الاتصال: بيانات ${cfg.label} غير مكتملة.`);
+                    return;
+                }
+                showToast(`ℹ️ تم حفظ إعدادات ${cfg.label}. الاختبار الحقيقي يحتاج Backend خاص بالشركة.`);
+            };
+
+            // Bulk Dispatch Execution via API
+            const handleExecuteBulkDispatch = async () => {
+                if (selectedOrderIds.length === 0) {
+                    showToast('⚠️ الرجاء اختيار طلبية واحدة على الأقل للشحن.');
+                    return;
+                }
+                const selected = orders.filter(o => selectedOrderIds.includes(o.id) && !o.trackingCode);
+                if (selected.length === 0) { showToast('⚠️ الطلبات المحددة أُرسلت مسبقاً أو لا يوجد ما يُرسل.'); return; }
+                const missing = selected.filter(o => !String(o.commune || '').trim());
+                if (missing.length) { showToast('⚠️ البلدية (commune) ناقصة في: ' + missing.map(o => o.id).join('، ') + ' — عدّل الطلب (زر القلم) وأضفها ثم أعد المحاولة.'); return; }
+                if (bulkCarrier !== 'Aranex') {
+                    showToast('ℹ️ في هذه النسخة الربط الحقيقي المفعّل هو Aranex. الشركات الأخرى تحتاج Backend مستقل.');
+                    return;
+                }
+                try {
+                    showToast('⏳ جارٍ إرسال الطلبيات فعلياً إلى Aranex...');
+                    const r = await fetch('/api/aranex/orders/bulk', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ orders: selected })
+                    });
+                    const data = await r.json();
+                    if (!r.ok || data.success === false) throw new Error(data.error || 'فشل الإرسال');
+                    const results = data.results || [];
+                    setOrders(prev => prev.map(o => {
+                        const result = results.find(x => x.orderId === o.id);
+                        if (!result) return o;
+                        return { ...o, status: result.success ? 'DISPATCHED' : o.status, deliveryCompany: 'Aranex', trackingCode: result.tracking || o.trackingCode, apiStatus: result.success ? 'SENT' : 'ERROR', apiMessage: result.message || '' };
+                    }));
+                    const failed = results.filter(x => !x.success);
+                    if (failed.length) alert('تعذر إرسال ' + failed.length + ' طلب:\n\n' + failed.map(x => x.orderId + ' ← ' + x.message).join('\n'));
+                    logAction('ARANEX_BULK_DISPATCH', { count: selected.length, results });
+                    setSelectedOrderIds([]);
+                    setIsBulkDispatchModalOpen(false);
+                    showToast(`🚀 تم إرسال ${results.filter(x => x.success).length} من ${selected.length} طلبية إلى Aranex — تجدها في aranex.ecotrack.dz`);
+                } catch (err) {
+                    showToast('❌ لم يتم إرسال الطلبات: ' + err.message);
+                }
+            };
+
+            const handleAddAgentSubmit = (e) => {
+                e.preventDefault();
+                const createdAgent = {
+                    id: `ag-${Date.now()}`,
+                    name: newAgent.name,
+                    role: newAgent.role || 'confirmator',
+                    paymentMode: newAgent.paymentMode || 'per_delivered',
+                    monthlySalary: safeNum(newAgent.monthlySalary),
+                    phone: newAgent.phone,
+                    email: newAgent.email || `${newAgent.name.toLowerCase().replace(/\s+/g, '')}@ecompulse.dz`,
+                    joinDate: new Date().toISOString().split('T')[0],
+                    commissionPerDelivered: safeNum(newAgent.commissionPerDelivered) || 150,
+                    paidCommissions: 0,
+                    payments: [],
+                    notes: newAgent.notes || ''
+                };
+                setAgents([...agents, createdAgent]);
+                setIsNewAgentModalOpen(false);
+                setNewAgent({ name: '', phone: '', email: '', role: 'confirmator', paymentMode: 'per_delivered', monthlySalary: 0, commissionPerDelivered: 150, notes: '' });
+                showToast(`👤 تم إضافة ملف الموظف ${createdAgent.name} بنجاح.`);
+            };
+
+            const handleSaveAgentEdit = (e) => {
+                e.preventDefault();
+                setAgents(prev => prev.map(a => a.id === editingAgent.id ? editingAgent : a));
+                setIsEditAgentModalOpen(false);
+                setEditingAgent(null);
+                showToast('✅ تم تحديث بيانات ملف الموظف بنجاح.');
+            };
+
+            const handleDeleteAgent = (agentId) => {
+                const agent = agents.find(a => a.id === agentId);
+                if (confirm(`هل أنت تأكد من حذف ملف الموظف "${agent?.name}"؟ سيتم إلغاء ربط طلبياته الموكلة إليه.`)) {
+                    setAgents(prev => prev.filter(a => a.id !== agentId));
+                    setOrders(prev => prev.map(o => o.confirmatorId === agentId ? { ...o, confirmatorId: '', confirmatorName: 'غير معين' } : o));
+                    showToast(`🗑️ تم حذف ملف الموظف وإعادة إتاحة طلبياته.`);
+                }
+            };
+
+            const handlePayAgentCommission = (agentId, amount) => {
+                setAgents(prev => prev.map(a => {
+                    if (a.id === agentId) {
+                        return { ...a, paidCommissions: (a.paidCommissions || 0) + amount };
+                    }
+                    return a;
+                }));
+                showToast(`💳 تم تسجيل تسديد مبلغ ${formatCurrency(amount, displayUnit)} للموظف.`);
+            };
+
+            const handleAddOrderSubmit = (e) => {
+                e.preventDefault();
+                const prodObj = products.find(p => p.name === newOrder.product) || products[0];
+                const createdOrder = {
+                    id: `ORD-${Math.floor(1000 + Math.random() * 9000)}`,
+                    clientName: newOrder.clientName,
+                    phone: newOrder.phone,
+                    wilaya: newOrder.wilaya,
+                    address: newOrder.address,
+                    commune: (newOrder.commune || '').trim(),
+                    product: newOrder.product,
+                    quantity: parseInt(newOrder.quantity) || 1,
+                    totalAmount: prodObj.sellingPrice * (parseInt(newOrder.quantity) || 1),
+                    status: 'NEW',
+                    confirmatorId: '',
+                    confirmatorName: 'غير معين',
+                    trackingCode: '',
+                    deliveryCompany: newOrder.deliveryCompany,
+                    date: new Date().toISOString().split('T')[0],
+                    notes: 'طلب جديد يدوي'
+                };
+
+                setOrders([createdOrder, ...orders]);
+                setIsNewOrderModalOpen(false);
+                setNewOrder({ clientName: '', phone: '', wilaya: '16 - الجزائر', address: '', product: products[0].name, quantity: 1, deliveryCompany: 'Aranex', commune: '' });
+                showToast('✅ تم تسجيل الطلبية الجديدة بنجاح.');
+            };
+
+            const handleSaveOrderEdit = (e) => {
+                e.preventDefault();
+                const prodObj = products.find(p => p.name === editingOrder.product) || products[0];
+                const updated = {
+                    ...editingOrder,
+                    totalAmount: prodObj.sellingPrice * (parseInt(editingOrder.quantity) || 1)
+                };
+                setOrders(prev => prev.map(o => o.id === editingOrder.id ? updated : o));
+                setIsEditOrderModalOpen(false);
+                setEditingOrder(null);
+                showToast('✅ تم تعديل بيانات الطلبية بنجاح.');
+            };
+
+            const handleDeleteOrder = (orderId) => {
+                if (confirm(`هل أنت متأكد من حذف الطلبية رقم ${orderId}؟`)) {
+                    setOrders(prev => prev.filter(o => o.id !== orderId));
+                    setSelectedOrderIds(prev => prev.filter(id => id !== orderId));
+                    showToast('🗑️ تم حذف الطلبية.');
+                }
+            };
+
+            const handleOpenPrintSlips = (targetOrders) => {
+                setOrdersToPrint(targetOrders);
+                setIsPrintSlipModalOpen(true);
+            };
+            // Real XLSX exports (not CSV renamed as Excel)
+            const downloadWorkbook = (rows, sheetName, fileName) => {
+                if (!window.XLSX) { showToast('❌ مكتبة Excel لم تُحمّل. أعد فتح الصفحة مع الإنترنت.'); return; }
+                const ws = XLSX.utils.json_to_sheet(rows);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, sheetName.slice(0,31));
+                XLSX.writeFile(wb, fileName);
+            };
+            const handleExportOrdersXLSX = (rows = orders, label = 'Orders') => {
+                const data = rows.map(o => ({
+                    'رقم الطلب': o.id, 'الزبون': o.clientName, 'الهاتف': o.phone, 'الولاية': o.wilaya,
+                    'العنوان': o.address, 'المنتج': o.product, 'الكمية': o.quantity, 'المبلغ': o.totalAmount,
+                    'الحالة': o.status, 'شركة التوصيل': o.deliveryCompany || '', 'Tracking': o.trackingCode || '',
+                    'المؤكد': o.confirmatorName || '', 'التاريخ': o.date || '', 'ملاحظات': o.notes || ''
+                }));
+                downloadWorkbook(data, label, `EComPulse_${label}_${new Date().toISOString().slice(0,10)}.xlsx`);
+                showToast(`📥 تم تحميل ملف Excel الحقيقي: ${data.length} طلبية.`);
+            };
+            const handleExportDispatchXLSX = () => {
+                const rows = orders.filter(o => ['CONFIRMED','DISPATCHED'].includes(o.status));
+                handleExportOrdersXLSX(rows, 'Shipping');
+            };
+            const handleExportAgentsCSV = () => {
+                const data = agents.map(a => ({
+                    'ID': a.id, 'الاسم': a.name, 'الدور': roleLabels[a.role] || a.role, 'الهاتف': a.phone,
+                    'نظام الدفع': paymentModeLabels[a.paymentMode] || a.paymentMode, 'الراتب الشهري': safeNum(a.monthlySalary),
+                    'العمولة': safeNum(a.commissionPerDelivered), 'المكتسب': getAgentEarned(a), 'المدفوع': safeNum(a.paidCommissions),
+                    'المتبقي': getAgentRemaining(a), 'تاريخ الانضمام': a.joinDate || '', 'ملاحظات': a.notes || ''
+                }));
+                downloadWorkbook(data, 'Staff', `EComPulse_Staff_${new Date().toISOString().slice(0,10)}.xlsx`);
+            };
+            const handleExportAllData = () => {
+                if (!window.XLSX) return showToast('❌ مكتبة Excel لم تُحمّل.');
+                const wb = XLSX.utils.book_new();
+                const sheets = {
+                    'Orders': orders.map(o => ({...o})),
+                    'Shipping': orders.filter(o => ['CONFIRMED','DISPATCHED'].includes(o.status)).map(o => ({...o})),
+                    'Staff': agents.map(a => ({...a, role: roleLabels[a.role] || a.role, paymentMode: paymentModeLabels[a.paymentMode] || a.paymentMode})),
+                    'Expenses': expenses.map(e => ({...e})),
+                    'Products': products.map(p => ({...p})),
+                    'Audit': auditLog.map(a => ({...a}))
+                };
+                Object.entries(sheets).forEach(([name, rows]) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), name));
+                XLSX.writeFile(wb, `EComPulse_Full_Backup_${new Date().toISOString().slice(0,10)}.xlsx`);
+                showToast('📦 تم تصدير نسخة Excel كاملة بكل البيانات.');
+            };
+
+            const financialStats = useMemo(() => {
+                const deliveredOrders = orders.filter(o => o.status === 'LIVRE');
+                const returnedOrders = orders.filter(o => o.status === 'RETOUR');
+                const confirmedOrders = orders.filter(o => o.status === 'CONFIRMED' || o.status === 'DISPATCHED' || o.status === 'LIVRE' || o.status === 'RETOUR');
+
+                const totalDeliveredRevenue = deliveredOrders.reduce((sum, o) => sum + o.totalAmount, 0);
+                const totalAdSpendDZD = 45000; // Simulated Facebook ad spend
+                const totalPackagingCost = confirmedOrders.length * 185;
+                const totalConfirmatorCommissions = agents.reduce((sum, a) => sum + getAgentEarned(a), 0);
+                const totalProductCost = deliveredOrders.reduce((sum, o) => { const p = products.find(x => x.name === o.product); return sum + safeNum(p?.costPrice) * safeNum(o.quantity); }, 0);
+                const totalManualExpenses = expenses.reduce((sum, exp) => sum + Number(exp.amount || 0), 0);
+                const netProfit = totalDeliveredRevenue - totalAdSpendDZD - totalPackagingCost - totalConfirmatorCommissions - totalManualExpenses - totalProductCost;
+
+                return {
+                    totalOrdersCount: orders.length,
+                    deliveredCount: deliveredOrders.length,
+                    returnedCount: returnedOrders.length,
+                    confirmedCount: confirmedOrders.length,
+                    deliveryRate: confirmedOrders.length > 0 ? ((deliveredOrders.length / confirmedOrders.length) * 100).toFixed(1) : 0,
+                    totalDeliveredRevenue,
+                    totalAdSpendDZD,
+                    totalPackagingCost,
+                    totalConfirmatorCommissions,
+                    totalManualExpenses,
+                    totalProductCost,
+                    netProfit
+                };
+            }, [orders, expenses]);
+
+            return (
+                <div className="flex flex-col min-h-screen">
+                    {/* Toast Notification */}
+                    {toastMessage && (
+                        <div className="fixed bottom-5 left-5 z-50 bg-blue-600 text-white font-bold px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 border border-blue-400 animate-bounce">
+                            <i className="fa-solid fa-circle-info text-lg"></i>
+                            <span>{toastMessage}</span>
+                        </div>
+                    )}
+
+                    {/* Top Navigation Bar */}
+                    <header className="bg-slate-900 border-b border-slate-800 px-4 py-3 sticky top-0 z-40 flex flex-wrap items-center justify-between gap-4 no-print">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2.5 bg-gradient-to-tr from-blue-700 to-indigo-600 rounded-xl text-white font-extrabold text-xl tracking-wider shadow-lg flex items-center gap-2">
+                                <i className="fa-solid fa-cubes-stacked"></i>
+                                <span>E-COM<span className="text-blue-300">PULSE</span></span>
+                            </div>
+                            <span className="text-xs bg-emerald-950 text-emerald-400 border border-emerald-800 px-3 py-1 rounded-full font-bold flex items-center gap-1.5">
+                                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                                اللوجيسيال الشامل للطلبيات، الموظفين، والربط البرمجي API 🇩🇿
+                            </span>
+                        </div>
+
+                        {/* Top Control Tools */}
+                        <div className="flex items-center gap-3 flex-wrap">
+                            {/* Currency Unit Toggle */}
+                            <div className="bg-slate-950 p-1 rounded-xl border border-slate-800 flex text-xs font-semibold">
+                                <button 
+                                    onClick={() => setDisplayUnit('DZD')}
+                                    className={`px-3 py-1.5 rounded-lg transition ${displayUnit === 'DZD' ? 'bg-blue-600 text-white font-bold shadow-md' : 'text-slate-400 hover:text-white'}`}
+                                >
+                                    دينار (DZD)
+                                </button>
+                                <button 
+                                    onClick={() => setDisplayUnit('CENTIMES')}
+                                    className={`px-3 py-1.5 rounded-lg transition ${displayUnit === 'CENTIMES' ? 'bg-blue-600 text-white font-bold shadow-md' : 'text-slate-400 hover:text-white'}`}
+                                >
+                                    سنتيم (Centimes)
+                                </button>
+                            </div>
+
+                            {/* Export CSV */}
+                            <button 
+                                onClick={() => handleExportOrdersXLSX()}
+                                className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                            >
+                                <i className="fa-solid fa-file-excel text-emerald-400"></i>
+                                <span>Excel الطلبات</span>
+                            </button>
+                            <button onClick={handleExportDispatchXLSX} className="bg-purple-900/40 hover:bg-purple-800 text-purple-200 border border-purple-800 px-3 py-1.5 rounded-xl text-xs font-bold transition">
+                                <i className="fa-solid fa-truck-fast ml-1"></i> Excel الشحن
+                            </button>
+                            <button onClick={handleExportAllData} className="bg-amber-900/30 hover:bg-amber-800 text-amber-200 border border-amber-800 px-3 py-1.5 rounded-xl text-xs font-bold transition">
+                                <i className="fa-solid fa-box-archive ml-1"></i> Backup كامل
+                            </button>
+
+                            {/* Add Order Quick Button */}
+                            <button 
+                                onClick={() => setIsNewOrderModalOpen(true)}
+                                className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-3.5 py-1.5 rounded-xl text-xs transition flex items-center gap-2 shadow-lg shadow-blue-600/30"
+                            >
+                                <i className="fa-solid fa-plus"></i>
+                                <span>إضافة طلبية جديدة</span>
+                            </button>
+                        </div>
+                    </header>
+
+                    {/* Navigation Tabs Bar */}
+                    <nav className="bg-slate-900/80 border-b border-slate-800 px-4 flex gap-2 overflow-x-auto text-sm font-semibold custom-scrollbar no-print">
+                        <button 
+                            onClick={() => setActiveTab('orders')} 
+                            className={`px-4 py-3 border-b-2 flex items-center gap-2 whitespace-nowrap transition ${activeTab === 'orders' ? 'border-blue-500 text-blue-400 font-bold bg-slate-800/60' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
+                        >
+                            <i className="fa-solid fa-headset text-indigo-400"></i>
+                            <span>1. إدارة الطلبيات والتأكيد</span>
+                            <span className="bg-blue-900/80 text-blue-300 text-xs px-2 py-0.5 rounded-full">{orders.length}</span>
+                        </button>
+
+                        <button 
+                            onClick={() => setActiveTab('dispatch')} 
+                            className={`px-4 py-3 border-b-2 flex items-center gap-2 whitespace-nowrap transition ${activeTab === 'dispatch' ? 'border-purple-500 text-purple-400 font-bold bg-slate-800/60' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
+                        >
+                            <i className="fa-solid fa-paper-plane text-purple-400"></i>
+                            <span>2. الشحن الجماعي المباشر (Bulk Dispatch)</span>
+                        </button>
+
+                        <button 
+                            onClick={() => setActiveTab('api_settings')} 
+                            className={`px-4 py-3 border-b-2 flex items-center gap-2 whitespace-nowrap transition ${activeTab === 'api_settings' ? 'border-cyan-500 text-cyan-400 font-bold bg-slate-800/60' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
+                        >
+                            <i className="fa-solid fa-code text-cyan-400"></i>
+                            <span>3. إعدادات API مع شركات التوصيل</span>
+                        </button>
+
+                        <button 
+                            onClick={() => setActiveTab('agents')} 
+                            className={`px-4 py-3 border-b-2 flex items-center gap-2 whitespace-nowrap transition ${activeTab === 'agents' ? 'border-emerald-500 text-emerald-400 font-bold bg-slate-800/60' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
+                        >
+                            <i className="fa-solid fa-id-card-clip text-emerald-400"></i>
+                            <span>4. ملفات الموظفين وفريق العمولات</span>
+                            <span className="bg-emerald-950 text-emerald-300 text-xs px-2 py-0.5 rounded-full">{agents.length}</span>
+                        </button>
+
+                        <button 
+                            onClick={() => setActiveTab('financials')} 
+                            className={`px-4 py-3 border-b-2 flex items-center gap-2 whitespace-nowrap transition ${activeTab === 'financials' ? 'border-amber-500 text-amber-400 font-bold bg-slate-800/60' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
+                        >
+                            <i className="fa-solid fa-chart-pie text-amber-400"></i>
+                            <span>5. الميزانية والربحية</span>
+                        </button>
+
+                        <button 
+                            onClick={() => setActiveTab('inventory')} 
+                            className={`px-4 py-3 border-b-2 flex items-center gap-2 whitespace-nowrap transition ${activeTab === 'inventory' ? 'border-slate-500 text-slate-400 font-bold bg-slate-800/60' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
+                        >
+                            <i className="fa-solid fa-boxes-packing text-slate-400"></i>
+                            <span>6. المخزون والمنتجات</span>
+                        </button>
+
+                        <button 
+                            onClick={() => setActiveTab('expenses')} 
+                            className={`px-4 py-3 border-b-2 flex items-center gap-2 whitespace-nowrap transition ${activeTab === 'expenses' ? 'border-rose-500 text-rose-400 font-bold bg-slate-800/60' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
+                        >
+                            <i className="fa-solid fa-wallet text-rose-400"></i>
+                            <span>7. المصاريف والرواتب</span>
+                            <span className="bg-rose-950 text-rose-300 text-xs px-2 py-0.5 rounded-full">{expenses.length}</span>
+                        </button>
+
+                        <button 
+                            onClick={() => setActiveTab('meta_ai')} 
+                            className={`px-4 py-3 border-b-2 flex items-center gap-2 whitespace-nowrap transition ${activeTab === 'meta_ai' ? 'border-indigo-500 text-indigo-400 font-bold bg-slate-800/60' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
+                        >
+                            <i className="fa-solid fa-robot text-indigo-400"></i>
+                            <span>8. Meta Ads — معاينة فقط</span>
+                        </button>
+                    </nav>
+
+                    {/* Main Content Area */}
+                    <main className="flex-1 p-4 md:p-6 max-w-7xl w-full mx-auto space-y-6 no-print">
+
+                        {/* TAB 1: ORDERS MANAGEMENT */}
+                        {activeTab === 'orders' && (
+                            <div className="space-y-6">
+                                {/* Top Metrics Bar */}
+                                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                                    <div className="bg-slate-900 p-3.5 rounded-xl border border-slate-800">
+                                        <div className="text-slate-400 text-xs font-semibold">إجمالي الطلبات</div>
+                                        <div className="text-xl font-extrabold text-slate-100 mt-1">{financialStats.totalOrdersCount} طلب</div>
+                                    </div>
+                                    <div className="bg-slate-900 p-3.5 rounded-xl border border-slate-800 border-r-4 border-r-amber-500">
+                                        <div className="text-slate-400 text-xs font-semibold">جديد (بانتظار التأكيد)</div>
+                                        <div className="text-xl font-extrabold text-amber-400 mt-1">{orders.filter(o => o.status === 'NEW').length} طلب</div>
+                                    </div>
+                                    <div className="bg-slate-900 p-3.5 rounded-xl border border-slate-800 border-r-4 border-r-blue-500">
+                                        <div className="text-slate-400 text-xs font-semibold">مؤكد (جاهز للشحن)</div>
+                                        <div className="text-xl font-extrabold text-blue-400 mt-1">{orders.filter(o => o.status === 'CONFIRMED').length} طلب</div>
+                                    </div>
+                                    <div className="bg-slate-900 p-3.5 rounded-xl border border-slate-800 border-r-4 border-r-purple-500">
+                                        <div className="text-slate-400 text-xs font-semibold">تم الشحن (In Transit)</div>
+                                        <div className="text-xl font-extrabold text-purple-400 mt-1">{orders.filter(o => o.status === 'DISPATCHED').length} طلب</div>
+                                    </div>
+                                    <div className="bg-slate-900 p-3.5 rounded-xl border border-slate-800 border-r-4 border-r-emerald-500">
+                                        <div className="text-slate-400 text-xs font-semibold">مستلم (Livré)</div>
+                                        <div className="text-xl font-extrabold text-emerald-400 mt-1">{financialStats.deliveredCount} طلب</div>
+                                    </div>
+                                </div>
+
+                                {/* Filters & Search & Bulk Tools */}
+                                <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 space-y-4">
+                                    <div className="flex flex-wrap items-center justify-between gap-3">
+                                        {/* Search Input */}
+                                        <div className="relative flex-1 min-w-[240px]">
+                                            <i className="fa-solid fa-magnifying-glass absolute right-3 top-3 text-slate-500 text-xs"></i>
+                                            <input 
+                                                type="text" 
+                                                value={searchQuery}
+                                                onChange={e => setSearchQuery(e.target.value)}
+                                                placeholder="بحث باسم الزبون، رقم الهاتف، رقم الطلبية، أو الولاية..." 
+                                                className="w-full bg-slate-950 border border-slate-800 rounded-xl pr-9 pl-3 py-2 text-xs text-slate-200 focus:border-blue-500 outline-none"
+                                            />
+                                        </div>
+
+                                        {/* Filter Tabs */}
+                                        <div className="flex items-center gap-1.5 overflow-x-auto text-xs font-bold custom-scrollbar">
+                                            <button onClick={() => setOrderFilter('ALL')} className={`px-3 py-1.5 rounded-lg transition ${orderFilter === 'ALL' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}>الكل ({orders.length})</button>
+                                            <button onClick={() => setOrderFilter('NEW')} className={`px-3 py-1.5 rounded-lg transition ${orderFilter === 'NEW' ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}>جديد ({orders.filter(o => o.status === 'NEW').length})</button>
+                                            <button onClick={() => setOrderFilter('CONFIRMED')} className={`px-3 py-1.5 rounded-lg transition ${orderFilter === 'CONFIRMED' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}>مؤكد ({orders.filter(o => o.status === 'CONFIRMED').length})</button>
+                                            <button onClick={() => setOrderFilter('DISPATCHED')} className={`px-3 py-1.5 rounded-lg transition ${orderFilter === 'DISPATCHED' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}>مرسل ({orders.filter(o => o.status === 'DISPATCHED').length})</button>
+                                            <button onClick={() => setOrderFilter('LIVRE')} className={`px-3 py-1.5 rounded-lg transition ${orderFilter === 'LIVRE' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}>مستلم ({orders.filter(o => o.status === 'LIVRE').length})</button>
+                                            <button onClick={() => setOrderFilter('RETOUR')} className={`px-3 py-1.5 rounded-lg transition ${orderFilter === 'RETOUR' ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}>روتور ({orders.filter(o => o.status === 'RETOUR').length})</button>
+                                        </div>
+                                    </div>
+
+                                    {/* Bulk Action Controls Bar */}
+                                    {selectedOrderIds.length > 0 && (
+                                        <div className="bg-purple-950/60 border border-purple-800/80 p-3 rounded-xl flex flex-wrap items-center justify-between gap-3 animate-fade-in">
+                                            <div className="flex items-center gap-2 text-xs font-bold text-purple-200">
+                                                <i className="fa-solid fa-list-check text-purple-400 text-sm"></i>
+                                                <span>تم تحديد <strong>{selectedOrderIds.length}</strong> طلبية.</span>
+                                            </div>
+
+                                            <div className="flex items-center gap-2">
+                                                {/* Bulk Dispatch API Button */}
+                                                <button 
+                                                    onClick={() => setIsBulkDispatchModalOpen(true)}
+                                                    className="bg-purple-600 hover:bg-purple-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-2 shadow-lg"
+                                                >
+                                                    <i className="fa-solid fa-paper-plane"></i>
+                                                    <span>شحن جماعي عبر API</span>
+                                                </button>
+
+                                                {/* Bulk Print Slips */}
+                                                <button 
+                                                    onClick={() => handleOpenPrintSlips(orders.filter(o => selectedOrderIds.includes(o.id)))}
+                                                    className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5"
+                                                >
+                                                    <i className="fa-solid fa-print text-blue-400"></i>
+                                                    <span>طباعة البوليصات المجمعة</span>
+                                                </button>
+                                                <button onClick={() => handleExportOrdersXLSX(orders.filter(o => selectedOrderIds.includes(o.id)), 'Selected')} className="bg-emerald-900/40 hover:bg-emerald-800 text-emerald-200 border border-emerald-800 px-3 py-1.5 rounded-lg text-xs font-bold">
+                                                    <i className="fa-solid fa-file-excel ml-1"></i> Excel المحدد
+                                                </button>
+                                                <button onClick={() => { if (confirm(`حذف ${selectedOrderIds.length} طلبية نهائياً؟`)) { setOrders(prev => prev.filter(o => !selectedOrderIds.includes(o.id))); logAction('BULK_DELETE_ORDERS', { count: selectedOrderIds.length }); setSelectedOrderIds([]); showToast('🗑️ تم حذف الطلبيات المحددة.'); } }} className="bg-rose-900/40 hover:bg-rose-700 text-rose-200 border border-rose-800 px-3 py-1.5 rounded-lg text-xs font-bold">
+                                                    <i className="fa-solid fa-trash ml-1"></i> حذف المحدد
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Orders Table */}
+                                <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden shadow-xl">
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-right text-xs text-slate-300">
+                                            <thead className="bg-slate-950 text-slate-400 font-bold uppercase border-b border-slate-800">
+                                                <tr>
+                                                    <th className="p-3.5 text-center">
+                                                        <input 
+                                                            type="checkbox" 
+                                                            onChange={handleSelectAllOrders}
+                                                            checked={filteredOrders.length > 0 && selectedOrderIds.length === filteredOrders.length}
+                                                            className="rounded border-slate-700 bg-slate-900" 
+                                                        />
+                                                    </th>
+                                                    <th className="p-3.5">رقم الطلب</th>
+                                                    <th className="p-3.5">الزبون والهاتف</th>
+                                                    <th className="p-3.5">الولاية والعنوان</th>
+                                                    <th className="p-3.5">المنتج والمبلغ</th>
+                                                    <th className="p-3.5">الشركة المحددة</th>
+                                                    <th className="p-3.5">حالة الطلب</th>
+                                                    <th className="p-3.5">المؤكد (Confirmator)</th>
+                                                    <th className="p-3.5 text-center">إجراءات</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-800">
+                                                {filteredOrders.map(order => (
+                                                    <tr key={order.id} className={`hover:bg-slate-800/50 transition ${selectedOrderIds.includes(order.id) ? 'bg-purple-950/20' : ''}`}>
+                                                        <td className="p-3.5 text-center">
+                                                            <input 
+                                                                type="checkbox" 
+                                                                checked={selectedOrderIds.includes(order.id)}
+                                                                onChange={() => handleToggleSelectOrder(order.id)}
+                                                                className="rounded border-slate-700 bg-slate-900"
+                                                            />
+                                                        </td>
+                                                        <td className="p-3.5 font-mono font-bold text-blue-400">{order.id}</td>
+                                                        <td className="p-3.5">
+                                                            <div className="font-bold text-slate-100">{order.clientName}</div>
+                                                            <div className="text-slate-400 dir-ltr text-right font-mono text-[11px]"><i className="fa-solid fa-phone text-blue-400 text-[10px] ml-1"></i>{order.phone}</div>
+                                                        </td>
+                                                        <td className="p-3.5">
+                                                            <div className="font-bold text-slate-200">{order.wilaya}{order.commune ? ' / ' + order.commune : <span className="text-amber-400 text-[10px] mr-1"> (بلدية ناقصة)</span>}</div>
+                                                            <div className="text-slate-400 text-[11px] truncate max-w-[140px]">{order.address}</div>
+                                                        </td>
+                                                        <td className="p-3.5">
+                                                            <div className="font-semibold text-slate-200">{order.product} ({order.quantity})</div>
+                                                            <div className="font-bold text-emerald-400 mt-0.5">{formatCurrency(order.totalAmount, displayUnit)}</div>
+                                                        </td>
+                                                        <td className="p-3.5">
+                                                            <span className="bg-slate-800 text-slate-300 px-2 py-0.5 rounded text-[11px] font-bold border border-slate-700">
+                                                                {normCarrier(order.deliveryCompany)}
+                                                            </span>
+                                                        </td>
+                                                        <td className="p-3.5">
+                                                            {renderStatusBadge(order.status)}
+                                                            {order.trackingCode && (
+                                                                <div className="text-[10px] font-mono text-purple-300 mt-1">
+                                                                    <i className="fa-solid fa-barcode ml-1"></i>{order.trackingCode}
+                                                                </div>
+                                                            )}
+                                                        </td>
+                                                        <td className="p-3.5">
+                                                            <select 
+                                                                value={order.confirmatorId}
+                                                                onChange={(e) => handleAssignConfirmator(order.id, e.target.value)}
+                                                                className="bg-slate-950 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200 focus:border-blue-500"
+                                                            >
+                                                                <option value="">-- تعيين مؤكد --</option>
+                                                                {agents.map(ag => (
+                                                                    <option key={ag.id} value={ag.id}>{ag.name}</option>
+                                                                ))}
+                                                            </select>
+                                                        </td>
+                                                        <td className="p-3.5">
+                                                            <div className="flex items-center justify-center gap-1.5">
+                                                                {/* Fast Status Toggle Buttons */}
+                                                                <button onClick={() => handleUpdateOrderStatus(order.id, 'CONFIRMED')} title="تأكيد" className="bg-emerald-600/20 hover:bg-emerald-600 text-emerald-400 hover:text-white p-1.5 rounded-lg border border-emerald-500/30 transition text-xs">
+                                                                    <i className="fa-solid fa-check"></i>
+                                                                </button>
+                                                                <button onClick={() => handleUpdateOrderStatus(order.id, 'LIVRE')} title="تسليم (Livré)" className="bg-blue-600/20 hover:bg-blue-600 text-blue-400 hover:text-white p-1.5 rounded-lg border border-blue-500/30 transition text-xs">
+                                                                    <i className="fa-solid fa-box-check"></i>
+                                                                </button>
+                                                                <button onClick={() => handleUpdateOrderStatus(order.id, 'RETOUR')} title="روتور (Retour)" className="bg-rose-600/20 hover:bg-rose-600 text-rose-400 hover:text-white p-1.5 rounded-lg border border-rose-500/30 transition text-xs">
+                                                                    <i className="fa-solid fa-rotate-left"></i>
+                                                                </button>
+
+                                                                {/* Edit Order */}
+                                                                <button onClick={() => { setEditingOrder(order); setIsEditOrderModalOpen(true); }} title="تعديل" className="bg-slate-800 hover:bg-slate-700 text-slate-300 p-1.5 rounded-lg border border-slate-700 transition text-xs">
+                                                                    <i className="fa-solid fa-pen"></i>
+                                                                </button>
+
+                                                                {/* Delete Order */}
+                                                                <button onClick={() => handleDeleteOrder(order.id)} title="حذف" className="bg-rose-900/30 hover:bg-rose-600 text-rose-400 hover:text-white p-1.5 rounded-lg border border-rose-800 transition text-xs">
+                                                                    <i className="fa-solid fa-trash"></i>
+                                                                </button>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                                {filteredOrders.length === 0 && (
+                                                    <tr>
+                                                        <td colSpan="9" className="p-8 text-center text-slate-500">لا توجد طلبات تطابق عناصر البحث الحالية.</td>
+                                                    </tr>
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* TAB 2: BULK DISPATCH */}
+                        {activeTab === 'dispatch' && (
+                            <div className="space-y-6">
+                                <div className="bg-slate-900 p-6 rounded-xl border border-slate-800 space-y-4">
+                                    <div className="flex justify-between items-center border-b border-slate-800 pb-4">
+                                        <div>
+                                            <h3 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+                                                <i className="fa-solid fa-paper-plane text-purple-400"></i>
+                                                <span>مركز الشحن الجماعي والربط المباشر مع شركات التوصيل (Bulk Dispatch)</span>
+                                            </h3>
+                                            <p className="text-xs text-slate-400 mt-1">تحديد وإرسال كافة الطلبيات المؤكدة دفعة واحدة لشركة التوصيل المربوطة عبر API.</p>
+                                        </div>
+                                        <button onClick={() => handleSyncAranex(false)} disabled={isSyncing || !aranexReady} className={`px-3 py-2 rounded-xl text-xs font-bold border transition ${aranexReady ? 'bg-cyan-900/40 hover:bg-cyan-800 text-cyan-200 border-cyan-800' : 'bg-slate-800 text-slate-500 border-slate-700 cursor-not-allowed'}`}>
+                                            <i className={`fa-solid fa-rotate ml-1 ${isSyncing ? 'fa-spin' : ''}`}></i> مزامنة الحالات من Aranex
+                                        </button>
+                                    </div>
+
+                                    {/* Dispatch Carrier Selection */}
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                        {Object.keys(apiConfigs).map(carrier => {
+                                            const cfg = apiConfigs[carrier];
+                                            const carrierOrders = orders.filter(o => o.status === 'CONFIRMED' && (normCarrier(o.deliveryCompany) === carrier));
+
+                                            return (
+                                                <div key={carrier} className="bg-slate-950 p-5 rounded-xl border border-slate-800 space-y-3 flex flex-col justify-between">
+                                                    <div>
+                                                        <div className="flex justify-between items-center">
+                                                            <span className="font-bold text-slate-100 text-sm">{cfg.label}</span>
+                                                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${isLinked(carrier) ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-slate-800 text-slate-500'}`}>
+                                                                {isLinked(carrier) ? 'مفعل ومربوط' : (carrier === 'Aranex' ? 'غير مربوط — شغّل السيرفر / أدخل التوكن' : 'غير مفعل / ينقصه المفتاح')}
+                                                            </span>
+                                                        </div>
+                                                        <div className="text-xs text-slate-400 mt-2">
+                                                            الطلبات المؤكدة المعينة لهذه الشركة: <strong className="text-purple-400">{carrierOrders.length} طلبية</strong>
+                                                        </div>
+                                                    </div>
+
+                                                    <button 
+                                                        onClick={() => {
+                                                            setSelectedOrderIds(carrierOrders.map(o => o.id));
+                                                            setBulkCarrier(carrier);
+                                                            setIsBulkDispatchModalOpen(true);
+                                                        }}
+                                                        disabled={carrierOrders.length === 0}
+                                                        className={`w-full py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 ${carrierOrders.length > 0 ? 'bg-purple-600 hover:bg-purple-500 text-white shadow-lg shadow-purple-600/30' : 'bg-slate-800 text-slate-500 cursor-not-allowed'}`}
+                                                    >
+                                                        <i className="fa-solid fa-rocket"></i>
+                                                        <span>إرسال الطلبات ({carrierOrders.length}) ضربة واحدة</span>
+                                                    </button>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+
+                                    {/* Active Dispatched Tracking Table */}
+                                    <div className="pt-4 border-t border-slate-800 space-y-3">
+                                        <h4 className="text-sm font-bold text-slate-300">الطلبات المرسلة وفي الطريق للموزع (In Transit)</h4>
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                            {orders.filter(o => o.status === 'DISPATCHED').map(order => (
+                                                <div key={order.id} className="bg-slate-950 p-4 rounded-xl border border-purple-900/50 space-y-2">
+                                                    <div className="flex justify-between items-center">
+                                                        <span className="font-bold text-purple-400 text-xs">{order.deliveryCompany}</span>
+                                                        <span className="text-[11px] font-mono bg-purple-900/50 text-purple-200 px-2 py-0.5 rounded">{order.trackingCode}</span>
+                                                    </div>
+                                                    <div className="font-bold text-slate-200 text-sm">{order.clientName} ({order.wilaya})</div>
+                                                    <div className="text-xs text-slate-400">المنتج: {order.product}</div>
+                                                    {order.carrierStatus && <div className="text-[11px] text-cyan-300">حالة Aranex: {order.carrierStatus}{order.carrierStatusDate ? ' — ' + order.carrierStatusDate : ''}</div>}
+                                                    {normCarrier(order.deliveryCompany) === 'Aranex' && order.trackingCode && (
+                                                        <div className="flex gap-2">
+                                                            <a href={'/api/aranex/label?tracking=' + encodeURIComponent(order.trackingCode)} target="_blank" rel="noreferrer" className="flex-1 text-center bg-slate-800 hover:bg-slate-700 text-slate-200 py-1.5 rounded text-[11px] font-bold"><i className="fa-solid fa-print ml-1"></i>بوليصة Aranex</a>
+                                                            <button onClick={() => handleCancelAranex(order)} className="bg-slate-800 hover:bg-rose-700 text-slate-300 hover:text-white px-3 py-1.5 rounded text-[11px] font-bold">إلغاء الشحنة</button>
+                                                        </div>
+                                                    )}
+                                                    <div className="flex gap-2 pt-2 border-t border-slate-800">
+                                                        <button onClick={() => handleUpdateOrderStatus(order.id, 'LIVRE')} className="flex-1 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-400 hover:text-white py-1.5 rounded text-xs font-bold transition">تسليم (Livré)</button>
+                                                        <button onClick={() => handleUpdateOrderStatus(order.id, 'RETOUR')} className="flex-1 bg-rose-600/20 hover:bg-rose-600 text-rose-400 hover:text-white py-1.5 rounded text-xs font-bold transition">روتور (Retour)</button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                            {orders.filter(o => o.status === 'DISPATCHED').length === 0 && (
+                                                <div className="p-6 text-center text-slate-500 bg-slate-950 rounded-xl border border-slate-800 col-span-3">لا توجد شحنات معلقة حالياً في الطريق.</div>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* TAB 3: API SETTINGS WITH FIX FOR SAVING & UPDATING */}
+                        {activeTab === 'api_settings' && (
+                            <div className="space-y-6">
+                                <div className="bg-slate-900 p-6 rounded-xl border border-slate-800 space-y-4">
+                                    <div className="border-b border-slate-800 pb-4 flex justify-between items-center flex-wrap gap-2">
+                                        <div>
+                                            <h3 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+                                                <i className="fa-solid fa-key text-cyan-400"></i>
+                                                <span>إعدادات وتفعيل المفاتيح البرمجية (API Keys & Tokens)</span>
+                                            </h3>
+                                            <p className="text-xs text-slate-400 mt-1">أدخل مفتاح API وToken التوثيق الخاص بحسابك، ثم اضغط على زر **حفظ وإتاحة التغييرات** لتثبيتها مباشرة باللوجيسيال.</p>
+                                        </div>
+                                        <span className="bg-cyan-950 text-cyan-300 border border-cyan-800 text-xs px-3 py-1 rounded-full font-bold">
+                                            <i className="fa-solid fa-shield-halved ml-1"></i> التحديث متاح وفوري
+                                        </span>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        {Object.keys(apiConfigs).map(carrierKey => {
+                                            const cfg = apiConfigs[carrierKey];
+                                            return (
+                                                <div key={carrierKey} className="bg-slate-950 p-5 rounded-2xl border border-slate-800 space-y-4 shadow-lg">
+                                                    <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                                                        <div className="font-bold text-slate-100 flex items-center gap-2">
+                                                            <i className="fa-solid fa-network-wired text-blue-400"></i>
+                                                            <span>{cfg.label}</span>
+                                                        </div>
+                                                        <label className="relative inline-flex items-center cursor-pointer">
+                                                            <input 
+                                                                type="checkbox" 
+                                                                checked={cfg.active} 
+                                                                onChange={e => {
+                                                                    const updated = {
+                                                                        ...apiConfigs,
+                                                                        [carrierKey]: { ...cfg, active: e.target.checked }
+                                                                    };
+                                                                    setApiConfigs(updated);
+                                                                    showToast(`تم ${e.target.checked ? 'تفعيل' : 'تعطيل'} ربط ${cfg.label}`);
+                                                                }} 
+                                                                className="sr-only peer" 
+                                                            />
+                                                            <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-cyan-600"></div>
+                                                        </label>
+                                                    </div>
+
+                                                    <div className="space-y-3 text-xs">
+                                                        <div>
+                                                            <label className="block text-slate-400 mb-1">{carrierKey === 'Aranex' ? 'توكن Aranex (يُحفظ في السيرفر فقط — اتركه فارغاً إن كان محفوظاً)' : 'API Key / Token المعرف الخاص بالحساب'}</label>
+                                                            <input 
+                                                                type={carrierKey === 'Aranex' ? 'password' : 'text'} 
+                                                                autoComplete="off"
+                                                                value={cfg.apiKey} 
+                                                                onChange={e => {
+                                                                    const val = e.target.value;
+                                                                    setApiConfigs(prev => ({
+                                                                        ...prev,
+                                                                        [carrierKey]: { ...prev[carrierKey], apiKey: val }
+                                                                    }));
+                                                                }}
+                                                                placeholder="ضع الكود هنا (مثال: eco_live_...)" 
+                                                                className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-slate-100 font-mono focus:border-cyan-500 focus:outline-none" 
+                                                            />
+                                                        </div>
+                                                        <div className={carrierKey === 'Aranex' ? 'hidden' : ''}>
+                                                            <label className="block text-slate-400 mb-1">API Secret / Token الإضافي (إن وجد)</label>
+                                                            <input 
+                                                                type="password" 
+                                                                value={cfg.token} 
+                                                                onChange={e => {
+                                                                    const val = e.target.value;
+                                                                    setApiConfigs(prev => ({
+                                                                        ...prev,
+                                                                        [carrierKey]: { ...prev[carrierKey], token: val }
+                                                                    }));
+                                                                }}
+                                                                placeholder="أدخل Token التوثيق هنا..." 
+                                                                className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-slate-100 font-mono focus:border-cyan-500 focus:outline-none" 
+                                                            />
+                                                        </div>
+
+                                                        {carrierKey === 'Aranex' && aranexStatus && (
+                                                            <div className={`p-2.5 rounded-lg border text-xs ${aranexStatus.ok ? 'bg-emerald-950/40 border-emerald-800 text-emerald-300' : 'bg-rose-950/40 border-rose-800 text-rose-300'}`}>{aranexStatus.loading ? '⏳ اختبار...' : aranexStatus.message}</div>
+                                                        )}
+
+                                                        <div className="flex gap-2 pt-2">
+                                                            {/* Save Button */}
+                                                            <button 
+                                                                onClick={() => handleSaveApiConfig(carrierKey)}
+                                                                className="flex-1 bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-2 rounded-lg text-xs transition flex items-center justify-center gap-1.5 shadow-md"
+                                                            >
+                                                                <i className="fa-solid fa-floppy-disk"></i>
+                                                                <span>حفظ وتثبيت الـ API</span>
+                                                            </button>
+
+                                                            {/* Test Connection Button */}
+                                                            <button 
+                                                                onClick={() => handleTestApiConnection(carrierKey)}
+                                                                className="bg-slate-800 hover:bg-slate-700 text-cyan-300 font-bold px-3 py-2 rounded-lg text-xs transition border border-slate-700 flex items-center justify-center gap-1.5"
+                                                            >
+                                                                <i className="fa-solid fa-plug"></i>
+                                                                <span>اختبار الاتصال</span>
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* TAB 4: STAFF & EMPLOYEE DOSSIERS (ملفات الموظفين) */}
+                        {activeTab === 'agents' && (
+                            <div className="space-y-6">
+                                <div className="flex flex-wrap justify-between items-center bg-slate-900 p-4 rounded-xl border border-slate-800 gap-3">
+                                    <div>
+                                        <h3 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+                                            <i className="fa-solid fa-id-card-clip text-emerald-400"></i>
+                                            <span>إدارة ملفات الموظفين (فريق التأكيد والعمولات)</span>
+                                        </h3>
+                                        <p className="text-xs text-slate-400 mt-1">عرض الملف الشخصي الكامل لكل موظف، تتبع نسبة التسليم، تسديد العمولات وطباعة كشوفات الحساب.</p>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <button 
+                                            onClick={handleExportAgentsCSV}
+                                            className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                                        >
+                                            <i className="fa-solid fa-file-csv text-emerald-400"></i>
+                                            <span>تصدير ملف الموظفين Excel</span>
+                                        </button>
+                                        <button 
+                                            onClick={() => setIsNewAgentModalOpen(true)}
+                                            className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3.5 py-2 rounded-xl text-xs transition flex items-center gap-2 shadow-lg shadow-emerald-600/30"
+                                        >
+                                            <i className="fa-solid fa-user-plus"></i>
+                                            <span>إضافة ملف موظف جديد</span>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Agents Cards List */}
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                                    {agents.map(agent => {
+                                        const agentOrders = orders.filter(o => o.confirmatorId === agent.id);
+                                        const confirmedCount = agentOrders.filter(o => o.status !== 'CANCELED' && o.status !== 'NEW').length;
+                                        const deliveredCount = agentOrders.filter(o => o.status === 'LIVRE').length;
+                                        const deliveryRate = confirmedCount > 0 ? ((deliveredCount / confirmedCount) * 100).toFixed(1) : 0;
+                                        const totalEarned = getAgentEarned(agent);
+                                        const remainingBalance = getAgentRemaining(agent);
+
+                                        return (
+                                            <div key={agent.id} className="bg-slate-900 p-5 rounded-2xl border border-slate-800 space-y-4 shadow-xl flex flex-col justify-between">
+                                                <div className="space-y-3">
+                                                    {/* Header Card */}
+                                                    <div className="flex justify-between items-start border-b border-slate-800 pb-3">
+                                                        <div className="flex items-center gap-3">
+                                                            <div className="w-10 h-10 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800 font-extrabold flex items-center justify-center text-sm">
+                                                                {agent.name.charAt(0)}
+                                                            </div>
+                                                            <div>
+                                                                <div className="font-bold text-slate-100 text-base">{agent.name}</div>
+                                                                <div className="text-xs text-slate-400 dir-ltr text-right mt-0.5"><i className="fa-solid fa-phone text-blue-400 ml-1"></i>{agent.phone}</div>
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex items-center gap-1">
+                                                            <button onClick={() => { setEditingAgent(agent); setIsEditAgentModalOpen(true); }} className="text-slate-400 hover:text-white p-1 text-xs" title="تعديل البيانات">
+                                                                <i className="fa-solid fa-pen"></i>
+                                                            </button>
+                                                            <button onClick={() => handleDeleteAgent(agent.id)} className="text-rose-400 hover:text-rose-300 p-1 text-xs" title="حذف الملف">
+                                                                <i className="fa-solid fa-trash"></i>
+                                                            </button>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Agent Performance Metrics */}
+                                                    <div className="grid grid-cols-2 gap-2 text-xs">
+                                                        <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                                                            <div className="text-slate-400 text-[10px]">الطلبات المؤكدة</div>
+                                                            <div className="font-bold text-blue-400 text-sm mt-0.5">{confirmedCount} طلبية</div>
+                                                        </div>
+                                                        <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                                                            <div className="text-slate-400 text-[10px]">نسبة التسليم (Delivery)</div>
+                                                            <div className="font-bold text-emerald-400 text-sm mt-0.5">{deliveryRate}%</div>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Financial Balances Summary */}
+                                                    <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-1.5 text-xs">
+                                                        <div className="flex justify-between text-slate-400">
+                                                            <span>{paymentModeLabels[agent.paymentMode] || 'نظام الدفع'}:</span>
+                                                            <span className="font-bold text-slate-200">{agent.commissionPerDelivered} دج</span>
+                                                        </div>
+                                                        <div className="flex justify-between text-slate-400">
+                                                            <span>إجمالي العمولات المكتسبة:</span>
+                                                            <span className="font-bold text-slate-200">{formatCurrency(totalEarned, displayUnit)}</span>
+                                                        </div>
+                                                        <div className="flex justify-between text-slate-400">
+                                                            <span>المبالغ المدفوعة سابقاً:</span>
+                                                            <span className="font-bold text-emerald-400">{formatCurrency(agent.paidCommissions || 0, displayUnit)}</span>
+                                                        </div>
+                                                        <div className="flex justify-between font-bold text-amber-400 pt-1.5 border-t border-slate-800">
+                                                            <span>المتبقي للدفعة القادمة:</span>
+                                                            <span>{formatCurrency(remainingBalance, displayUnit)}</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                {/* Actions */}
+                                                <div className="space-y-2">
+                                                    {/* Open Dossier Button */}
+                                                    <button 
+                                                        onClick={() => setSelectedAgentDossier(agent)}
+                                                        className="w-full bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-slate-700 font-bold py-2 rounded-xl text-xs transition flex items-center justify-center gap-2"
+                                                    >
+                                                        <i className="fa-solid fa-folder-open"></i>
+                                                        <span>فتح ملف الموظف (Dossier)</span>
+                                                    </button>
+
+                                                    {/* Pay Commission Button */}
+                                                    <button 
+                                                        onClick={() => handlePayAgentCommission(agent.id, remainingBalance > 0 ? remainingBalance : 1000)}
+                                                        disabled={remainingBalance <= 0}
+                                                        className={`w-full py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 ${remainingBalance > 0 ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-md' : 'bg-slate-800 text-slate-500 cursor-not-allowed'}`}
+                                                    >
+                                                        <i className="fa-solid fa-hand-holding-dollar"></i>
+                                                        <span>تسديد العمولات المتبقية ({formatCurrency(remainingBalance, displayUnit)})</span>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* TAB 5: FINANCIALS */}
+                        {activeTab === 'financials' && (
+                            <div className="space-y-6">
+                                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                                    <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                                        <div className="text-slate-400 text-xs font-semibold">المداخيل الصافية المحصلة</div>
+                                        <div className="text-2xl font-bold text-emerald-400 mt-1">{formatCurrency(financialStats.totalDeliveredRevenue, displayUnit)}</div>
+                                    </div>
+                                    <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                                        <div className="text-slate-400 text-xs font-semibold">مصاريف الإعلانات التقديرية</div>
+                                        <div className="text-2xl font-bold text-rose-400 mt-1">{formatCurrency(financialStats.totalAdSpendDZD, displayUnit)}</div>
+                                    </div>
+                                    <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                                        <div className="text-slate-400 text-xs font-semibold">عمولات المؤكدين والتغليف</div>
+                                        <div className="text-2xl font-bold text-amber-400 mt-1">{formatCurrency(financialStats.totalConfirmatorCommissions + financialStats.totalPackagingCost, displayUnit)}</div>
+                                    </div>
+                                    <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                                        <div className="text-slate-400 text-xs font-semibold">تكلفة المنتجات المستلمة</div>
+                                        <div className="text-2xl font-bold text-orange-400 mt-1">{formatCurrency(financialStats.totalProductCost, displayUnit)}</div>
+                                    </div>
+                                    <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                                        <div className="text-slate-400 text-xs font-semibold">المصاريف الإضافية</div>
+                                        <div className="text-2xl font-bold text-rose-400 mt-1">{formatCurrency(financialStats.totalManualExpenses, displayUnit)}</div>
+                                    </div>
+                                    <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 border-l-4 border-l-blue-500">
+                                        <div className="text-slate-400 text-xs font-semibold">صافي الربح الصافي الحالي</div>
+                                        <div className="text-2xl font-bold text-blue-400 mt-1">{formatCurrency(financialStats.netProfit, displayUnit)}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* TAB 6: INVENTORY */}
+                        {activeTab === 'inventory' && (
+                            <div className="bg-slate-900 p-6 rounded-xl border border-slate-800 space-y-4">
+                                <h3 className="text-lg font-bold text-slate-100">📦 إدارة المخزون والمنتجات</h3>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    {products.map(p => (
+                                        <div key={p.id} className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2">
+                                            <div className="font-bold text-slate-100">{p.name}</div>
+                                            <div className="text-xs font-mono text-slate-400">SKU: {p.sku}</div>
+                                            <div className="flex justify-between text-xs pt-2 border-t border-slate-800">
+                                                <span>المخزون المتوفر:</span>
+                                                <span className="font-bold text-emerald-400">{p.stock} قطعة</span>
+                                            </div>
+                                            <div className="flex justify-between text-xs">
+                                                <span>سعر البيع:</span>
+                                                <span className="font-bold text-blue-400">{formatCurrency(p.sellingPrice, displayUnit)}</span>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* TAB 7: EXPENSES */}
+                        {activeTab === 'expenses' && (
+                            <div className="space-y-6">
+                                <div className="flex flex-wrap justify-between items-center gap-3">
+                                    <div>
+                                        <h3 className="text-2xl font-bold text-slate-100 flex items-center gap-2">
+                                            <i className="fa-solid fa-wallet text-rose-400"></i>
+                                            إدارة المصاريف والرواتب والمواد
+                                        </h3>
+                                        <p className="text-xs text-slate-400 mt-1">سجل مستقل للمصاريف الإضافية ويُحفظ تلقائياً في المتصفح.</p>
+                                    </div>
+                                    <div className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-2 text-sm">
+                                        إجمالي المصاريف المسجلة:
+                                        <strong className="text-rose-400 mr-2">{formatCurrency(expenses.reduce((s,e) => s + e.amount, 0), displayUnit)}</strong>
+                                    </div>
+                                </div>
+
+                                <form onSubmit={handleAddExpense} className="bg-slate-900 p-5 rounded-2xl border border-slate-800 grid grid-cols-1 md:grid-cols-4 gap-3">
+                                    <select value={newExpense.category} onChange={e => setNewExpense({...newExpense, category: e.target.value})} className="bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-sm">
+                                        <option value="رواتب">رواتب الموظفين والعمال</option>
+                                        <option value="مواد أولية">مواد أولية وتغليف</option>
+                                        <option value="محتوى">فيديوهات وإشهارات</option>
+                                        <option value="مصاريف ورشة">مصاريف ورشة وكهرباء</option>
+                                        <option value="موردين">شراء منتجات / موردين</option>
+                                        <option value="أخرى">مصاريف أخرى</option>
+                                    </select>
+                                    <input required value={newExpense.title} onChange={e => setNewExpense({...newExpense, title: e.target.value})} placeholder="وصف المصروف" className="bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-sm" />
+                                    <input required type="number" min="1" value={newExpense.amount} onChange={e => setNewExpense({...newExpense, amount: e.target.value})} placeholder="المبلغ بالدينار" className="bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-sm" />
+                                    <button className="bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl px-4 py-2.5 transition">
+                                        <i className="fa-solid fa-plus ml-1"></i> إضافة المصروف
+                                    </button>
+                                </form>
+
+                                <div className="bg-slate-900 rounded-2xl border border-slate-800 overflow-hidden">
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-right text-sm">
+                                            <thead className="bg-slate-950 text-slate-400">
+                                                <tr>
+                                                    <th className="p-3">التاريخ</th><th className="p-3">الفئة</th><th className="p-3">البيان</th><th className="p-3">المبلغ</th><th className="p-3">إجراء</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-800">
+                                                {expenses.map(exp => (
+                                                    <tr key={exp.id} className="hover:bg-slate-800/50">
+                                                        <td className="p-3 text-slate-400">{exp.date}</td>
+                                                        <td className="p-3"><span className="bg-slate-800 px-2 py-1 rounded-lg text-xs">{exp.category}</span></td>
+                                                        <td className="p-3 font-bold text-slate-100">{exp.title}</td>
+                                                        <td className="p-3 font-bold text-rose-400">{formatCurrency(exp.amount, displayUnit)}</td>
+                                                        <td className="p-3">
+                                                            <button onClick={() => handleDeleteExpense(exp.id)} className="text-rose-400 hover:text-rose-300" title="حذف">
+                                                                <i className="fa-solid fa-trash"></i>
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                                {expenses.length === 0 && <tr><td colSpan="5" className="p-8 text-center text-slate-500">لا توجد مصاريف مسجلة.</td></tr>}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* TAB 8: META ADS AI */}
+                        {activeTab === 'meta_ai' && (
+                            <div className="space-y-6">
+                                <div className="bg-emerald-950/30 border border-emerald-800/60 p-4 rounded-2xl text-xs text-emerald-200">
+                                    <div className="font-bold text-base mb-1">🔒 وضع المعاينة فقط — لا تعديل على الحملات</div>
+                                    <div>هذا القسم مخصص لقراءة الأداء (Spend, Results, CPA, ROAS) فقط. لا يحتوي على أزرار إنشاء/تعديل/إيقاف الحملات.</div>
+                                </div>
+                                <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+                                    <div className="grid md:grid-cols-2 gap-3">
+                                        <input value={metaReadOnly.adAccountId} onChange={e => setMetaReadOnly({...metaReadOnly, adAccountId: e.target.value})} placeholder="act_XXXXXXXXXXXX — Meta Ad Account ID" className="bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-sm" />
+                                        <div className="bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-400">🔐 Meta Token محفوظ في Backend فقط</div>
+                                    </div>
+                                    <button onClick={async () => { try { const r=await fetch('/api/meta/insights',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(metaReadOnly)}); const d=await r.json(); if(!r.ok) throw new Error(d.error||'فشل'); setAiAnalysis(d); showToast('✅ تمت معاينة الحساب بدون أي تعديل.'); } catch(e){ showToast('❌ تعذر معاينة Meta Ads: '+e.message); } }} className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-4 py-2.5 rounded-xl">
+                                        <i className="fa-solid fa-eye ml-1"></i> معاينة الحساب الآن
+                                    </button>
+                                    {aiAnalysis && <pre className="bg-slate-950 border border-slate-800 rounded-xl p-4 text-xs text-slate-300 overflow-auto max-h-96 whitespace-pre-wrap">{JSON.stringify(aiAnalysis,null,2)}</pre>}
+                                </div>
+                                <div>
+                                    <h3 className="text-2xl font-bold text-slate-100 flex items-center gap-2">
+                                        <i className="fa-solid fa-robot text-indigo-400"></i>
+                                        ربط Meta Pixel ومحلل الإعلانات الذكي
+                                    </h3>
+                                    <p className="text-xs text-slate-400 mt-1">واجهة إعداد وتحليل. الاتصال الحقيقي بـ Meta Graph API يحتاج Backend آمن، وليس وضع Access Token داخل الواجهة العامة.</p>
+                                </div>
+
+                                <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-xs text-slate-400 mb-1">Meta Pixel ID</label>
+                                        <input value={metaSettings.pixelId} onChange={e => setMetaSettings({...metaSettings, pixelId: e.target.value})} placeholder="1234567890..." className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 font-mono text-sm" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs text-slate-400 mb-1">Meta Access Token</label>
+                                        <input type="password" value={metaSettings.accessToken} onChange={e => setMetaSettings({...metaSettings, accessToken: e.target.value})} placeholder="EAAB..." className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 font-mono text-sm" />
+                                    </div>
+                                    <div className="md:col-span-2">
+                                        <button onClick={runAiMetaAnalysis} className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-5 py-2.5 rounded-xl transition">
+                                            <i className="fa-solid fa-chart-line ml-1"></i> تحليل الحملة
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {aiAnalysis && (
+                                    <div className="bg-slate-900 p-6 rounded-2xl border border-indigo-500/30 space-y-3">
+                                        <h4 className="font-bold text-indigo-400">🤖 تقرير التحليل</h4>
+                                        {typeof aiAnalysis === 'string' ? <p className="text-slate-300">{aiAnalysis}</p> : (
+                                            <>
+                                                <p className="text-slate-300"><strong>CPA:</strong> {aiAnalysis.cpaStatus}</p>
+                                                <p className="text-slate-300"><strong>التسليم:</strong> {aiAnalysis.deliveryCorrelation}</p>
+                                                <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 text-emerald-300">
+                                                    <strong>التوصية:</strong> {aiAnalysis.recommendation}
+                                                </div>
+                                            </>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                    </main>
+
+                    {/* MODAL: FULL AGENT DOSSIER / DOSSIER الموظف */}
+                    {selectedAgentDossier && (
+                        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                            <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full p-6 space-y-5 shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
+                                <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-12 h-12 rounded-full bg-emerald-900 text-emerald-300 font-extrabold flex items-center justify-center text-lg">
+                                            {selectedAgentDossier.name.charAt(0)}
+                                        </div>
+                                        <div>
+                                            <h3 className="font-bold text-slate-100 text-lg">{selectedAgentDossier.name}</h3>
+                                            <span className="text-xs text-emerald-400 bg-emerald-950 border border-emerald-800 px-2 py-0.5 rounded-full font-semibold">
+                                                موظف تأكيد هاتف معتمد
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <button onClick={() => setSelectedAgentDossier(null)} className="text-slate-400 hover:text-white text-lg"><i className="fa-solid fa-xmark"></i></button>
+                                </div>
+
+                                {/* Personal & Employment Details */}
+                                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+                                    <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
+                                        <div className="text-slate-400">رقم الهاتف:</div>
+                                        <div className="font-bold text-slate-100 mt-1 font-mono">{selectedAgentDossier.phone}</div>
+                                    </div>
+                                    <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
+                                        <div className="text-slate-400">البريد الإلكتروني:</div>
+                                        <div className="font-bold text-slate-100 mt-1 truncate">{selectedAgentDossier.email || 'غير مدون'}</div>
+                                    </div>
+                                    <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
+                                        <div className="text-slate-400">تاريخ التوظيف:</div>
+                                        <div className="font-bold text-blue-400 mt-1 font-mono">{selectedAgentDossier.joinDate || '2025-11-01'}</div>
+                                    </div>
+                                </div>
+
+                                {/* Detailed Performance Analytics */}
+                                {(() => {
+                                    const agentOrders = orders.filter(o => o.confirmatorId === selectedAgentDossier.id);
+                                    const confirmed = agentOrders.filter(o => o.status !== 'CANCELED' && o.status !== 'NEW');
+                                    const delivered = agentOrders.filter(o => o.status === 'LIVRE');
+                                    const returned = agentOrders.filter(o => o.status === 'RETOUR');
+                                    const rate = confirmed.length > 0 ? ((delivered.length / confirmed.length) * 100).toFixed(1) : 0;
+                                    const totalEarned = getAgentEarned(selectedAgentDossier);
+                                    const balance = getAgentRemaining(selectedAgentDossier);
+
+                                    return (
+                                        <div className="space-y-4">
+                                            <h4 className="font-bold text-slate-200 text-sm border-r-4 border-r-emerald-500 pr-2">سجل الأداء والمستحقات الممالية:</h4>
+                                            
+                                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                                                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
+                                                    <div className="text-slate-400">الطلبيات المعالجة</div>
+                                                    <div className="text-base font-extrabold text-slate-100 mt-1">{agentOrders.length} طلبية</div>
+                                                </div>
+                                                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
+                                                    <div className="text-slate-400">الطلبيات المستلمة</div>
+                                                    <div className="text-base font-extrabold text-emerald-400 mt-1">{delivered.length} طلبية</div>
+                                                </div>
+                                                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
+                                                    <div className="text-slate-400">الطلبيات المرتجعة</div>
+                                                    <div className="text-base font-extrabold text-rose-400 mt-1">{returned.length} طلبية</div>
+                                                </div>
+                                                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
+                                                    <div className="text-slate-400">معدل النجاح %</div>
+                                                    <div className="text-base font-extrabold text-blue-400 mt-1">{rate}%</div>
+                                                </div>
+                                            </div>
+
+                                            {/* Financial Ledger */}
+                                            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2 text-xs">
+                                                <div className="flex justify-between text-slate-300">
+                                                    <span>مجموع العمولات المستحقة:</span>
+                                                    <span className="font-bold text-slate-100">{formatCurrency(totalEarned, displayUnit)}</span>
+                                                </div>
+                                                <div className="flex justify-between text-slate-300">
+                                                    <span>إجمالي ما تم سداده للموظف:</span>
+                                                    <span className="font-bold text-emerald-400">{formatCurrency(selectedAgentDossier.paidCommissions || 0, displayUnit)}</span>
+                                                </div>
+                                                <div className="flex justify-between text-sm font-bold text-amber-400 pt-2 border-t border-slate-800">
+                                                    <span>الرصيد المتبقي الواجب دفعه:</span>
+                                                    <span>{formatCurrency(balance, displayUnit)}</span>
+                                                </div>
+                                            </div>
+
+                                            {/* Recent Assigned Orders Table */}
+                                            <div className="space-y-2">
+                                                <div className="text-xs font-bold text-slate-300">آخر الطلبات المؤكدة بوساطته:</div>
+                                                <div className="max-h-36 overflow-y-auto custom-scrollbar border border-slate-800 rounded-xl">
+                                                    <table className="w-full text-right text-[11px] text-slate-300">
+                                                        <thead className="bg-slate-950 text-slate-400 font-bold">
+                                                            <tr>
+                                                                <th className="p-2">رقم الطلب</th>
+                                                                <th className="p-2">الزبون</th>
+                                                                <th className="p-2">الولاية</th>
+                                                                <th className="p-2">الحالة</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody className="divide-y divide-slate-800 bg-slate-900">
+                                                            {agentOrders.map(o => (
+                                                                <tr key={o.id}>
+                                                                    <td className="p-2 font-mono text-blue-400">{o.id}</td>
+                                                                    <td className="p-2">{o.clientName}</td>
+                                                                    <td className="p-2">{o.wilaya}</td>
+                                                                    <td className="p-2">{renderStatusBadge(o.status)}</td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+
+                                <div className="pt-3 border-t border-slate-800 flex gap-2">
+                                    <button 
+                                        onClick={() => window.print()} 
+                                        className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 rounded-xl text-xs transition flex items-center justify-center gap-2"
+                                    >
+                                        <i className="fa-solid fa-print"></i>
+                                        <span>طباعة كشف حساب الموظف</span>
+                                    </button>
+                                    <button 
+                                        onClick={() => setSelectedAgentDossier(null)} 
+                                        className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2.5 rounded-xl text-xs font-bold"
+                                    >
+                                        إغلاق
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* MODAL: ADD ORDER */}
+                    {isNewOrderModalOpen && (
+                        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                            <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+                                <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                                    <h3 className="font-bold text-slate-100 text-base">تسجيل طلبية جديدة</h3>
+                                    <button onClick={() => setIsNewOrderModalOpen(false)} className="text-slate-400 hover:text-white"><i className="fa-solid fa-xmark"></i></button>
+                                </div>
+                                <form onSubmit={handleAddOrderSubmit} className="space-y-3 text-xs">
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">اسم الزبون الكامل</label>
+                                        <input type="text" required value={newOrder.clientName} onChange={e => setNewOrder({...newOrder, clientName: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500" placeholder="مثال: يونس حمادي" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">رقم الهاتف</label>
+                                        <input type="text" required value={newOrder.phone} onChange={e => setNewOrder({...newOrder, phone: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500" placeholder="0655112233" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">الولاية</label>
+                                        <select required value={newOrder.wilaya} onChange={e => setNewOrder({...newOrder, wilaya: e.target.value, commune: ''})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500">
+                                            {!WILAYAS.includes(newOrder.wilaya) && <option value={newOrder.wilaya}>{newOrder.wilaya}</option>}
+                                            {WILAYAS.map(w => <option key={w} value={w}>{w}</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">البلدية (Commune) — مطلوبة لشركة التوصيل</label>
+                                        <input type="text" required list="communes-list" value={newOrder.commune || ''} onChange={e => setNewOrder({...newOrder, commune: e.target.value})} placeholder="اختر من القائمة كما تكتبها Aranex" className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500" />
+                                        <datalist id="communes-list">{communes.map(c => <option key={c} value={c} />)}</datalist>
+                                    </div>
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">العنوان التفصيلي</label>
+                                        <input type="text" required value={newOrder.address} onChange={e => setNewOrder({...newOrder, address: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500" placeholder="اسم الحي / البلدية" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">المنتج</label>
+                                        <select value={newOrder.product} onChange={e => setNewOrder({...newOrder, product: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500">
+                                            {products.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">شركة التوصيل المحددة</label>
+                                        <select value={newOrder.deliveryCompany} onChange={e => setNewOrder({...newOrder, deliveryCompany: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500">
+                                            <option value="Aranex">Aranex (EcoTrack)</option>
+                                            <option value="Yalidine">Yalidine Express</option>
+                                            <option value="Aramex">Aramex Algeria</option>
+                                            <option value="ZRExpress">ZR Express</option>
+                                        </select>
+                                    </div>
+                                    <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2.5 rounded-xl transition mt-2">حفظ وتأكيد</button>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* MODAL: EDIT ORDER */}
+                    {isEditOrderModalOpen && editingOrder && (
+                        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                            <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+                                <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                                    <h3 className="font-bold text-slate-100 text-base">تعديل الطلبية ({editingOrder.id})</h3>
+                                    <button onClick={() => setIsEditOrderModalOpen(false)} className="text-slate-400 hover:text-white"><i className="fa-solid fa-xmark"></i></button>
+                                </div>
+                                <form onSubmit={handleSaveOrderEdit} className="space-y-3 text-xs">
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">اسم الزبون</label>
+                                        <input type="text" required value={editingOrder.clientName} onChange={e => setEditingOrder({...editingOrder, clientName: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">الهاتف</label>
+                                        <input type="text" required value={editingOrder.phone} onChange={e => setEditingOrder({...editingOrder, phone: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">الولاية</label>
+                                        <select required value={editingOrder.wilaya} onChange={e => setEditingOrder({...editingOrder, wilaya: e.target.value, commune: ''})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500">
+                                            {!WILAYAS.includes(editingOrder.wilaya) && <option value={editingOrder.wilaya}>{editingOrder.wilaya}</option>}
+                                            {WILAYAS.map(w => <option key={w} value={w}>{w}</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">البلدية (Commune) — مطلوبة لشركة التوصيل</label>
+                                        <input type="text" required list="communes-list" value={editingOrder.commune || ''} onChange={e => setEditingOrder({...editingOrder, commune: e.target.value})} placeholder="اختر من القائمة كما تكتبها Aranex" className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500" />
+                                        <datalist id="communes-list">{communes.map(c => <option key={c} value={c} />)}</datalist>
+                                    </div>
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">العنوان</label>
+                                        <input type="text" required value={editingOrder.address} onChange={e => setEditingOrder({...editingOrder, address: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500" />
+                                    </div>
+                                    <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2.5 rounded-xl transition mt-2">حفظ التغييرات</button>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* MODAL: ADD AGENT */}
+                    {isNewAgentModalOpen && (
+                        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                            <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+                                <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                                    <h3 className="font-bold text-slate-100 text-base">إضافة ملف موظف جديد</h3>
+                                    <button onClick={() => setIsNewAgentModalOpen(false)} className="text-slate-400 hover:text-white"><i className="fa-solid fa-xmark"></i></button>
+                                </div>
+                                <form onSubmit={handleAddAgentSubmit} className="space-y-3 text-xs">
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">اسم الموظف الكامل</label>
+                                        <input type="text" required value={newAgent.name} onChange={e => setNewAgent({...newAgent, name: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500" placeholder="اسم الموظف" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">رقم الهاتف</label>
+                                        <input type="text" required value={newAgent.phone} onChange={e => setNewAgent({...newAgent, phone: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500" placeholder="0550000000" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">البريد الإلكتروني (اختياري)</label>
+                                        <input type="email" value={newAgent.email} onChange={e => setNewAgent({...newAgent, email: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500" placeholder="agent@ecompulse.dz" />
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <div>
+                                            <label className="block text-slate-300 mb-1">نوع الموظف</label>
+                                            <select value={newAgent.role} onChange={e => setNewAgent({...newAgent, role: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100">
+                                                {Object.entries(roleLabels).map(([k,v]) => <option key={k} value={k}>{v}</option>)}
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="block text-slate-300 mb-1">طريقة الدفع</label>
+                                            <select value={newAgent.paymentMode} onChange={e => setNewAgent({...newAgent, paymentMode: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100">
+                                                {Object.entries(paymentModeLabels).map(([k,v]) => <option key={k} value={k}>{v}</option>)}
+                                            </select>
+                                        </div>
+                                    </div>
+                                    {newAgent.paymentMode === 'monthly' && <div><label className="block text-slate-300 mb-1">الراتب الشهري (دج)</label><input type="number" min="0" value={newAgent.monthlySalary} onChange={e => setNewAgent({...newAgent, monthlySalary: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100" /></div>}
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">قيمة العمولة لكل طلب (دج)</label>
+                                        <input type="number" value={newAgent.commissionPerDelivered} onChange={e => setNewAgent({...newAgent, commissionPerDelivered: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">ملاحظات الملف</label>
+                                        <textarea value={newAgent.notes} onChange={e => setNewAgent({...newAgent, notes: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500 h-16" placeholder="تفاصيل الموظف..."></textarea>
+                                    </div>
+                                    <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 rounded-xl transition mt-2">إنشاء الملف وتأكيد</button>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* MODAL: EDIT AGENT */}
+                    {isEditAgentModalOpen && editingAgent && (
+                        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                            <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+                                <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                                    <h3 className="font-bold text-slate-100 text-base">تعديل ملف الموظف</h3>
+                                    <button onClick={() => setIsEditAgentModalOpen(false)} className="text-slate-400 hover:text-white"><i className="fa-solid fa-xmark"></i></button>
+                                </div>
+                                <form onSubmit={handleSaveAgentEdit} className="space-y-3 text-xs">
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">اسم الموظف</label>
+                                        <input type="text" required value={editingAgent.name} onChange={e => setEditingAgent({...editingAgent, name: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">رقم الهاتف</label>
+                                        <input type="text" required value={editingAgent.phone} onChange={e => setEditingAgent({...editingAgent, phone: e.target.value})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">قيمة العمولة لكل طلب (دج)</label>
+                                        <input type="number" value={editingAgent.commissionPerDelivered} onChange={e => setEditingAgent({...editingAgent, commissionPerDelivered: parseFloat(e.target.value) || 0})} className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:border-blue-500" />
+                                    </div>
+                                    <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2.5 rounded-xl transition mt-2">حفظ التغييرات</button>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* MODAL: BULK DISPATCH VIA API */}
+                    {isBulkDispatchModalOpen && (
+                        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                            <div className="bg-slate-900 border border-purple-800/80 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+                                <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                                    <h3 className="font-bold text-slate-100 text-base flex items-center gap-2">
+                                        <i className="fa-solid fa-paper-plane text-purple-400"></i>
+                                        <span>تأكيد الشحن الجماعي عبر API</span>
+                                    </h3>
+                                    <button onClick={() => setIsBulkDispatchModalOpen(false)} className="text-slate-400 hover:text-white"><i className="fa-solid fa-xmark"></i></button>
+                                </div>
+                                <div className="text-xs space-y-3">
+                                    <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-1">
+                                        <div className="text-slate-400">عدد الطلبيات المحددة للشحن:</div>
+                                        <div className="text-lg font-extrabold text-purple-400">{selectedOrderIds.length} طلبية</div>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-slate-300 mb-1">اختر شركة التوصيل لإرسال الطلبيات إليها:</label>
+                                        <select 
+                                            value={bulkCarrier} 
+                                            onChange={e => setBulkCarrier(e.target.value)}
+                                            className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 font-bold focus:border-purple-500"
+                                        >
+                                            {Object.keys(apiConfigs).map(c => (
+                                                <option key={c} value={c}>{apiConfigs[c].label} {isLinked(c) ? '✅ (مربوط)' : '❌ (غير مربوط)'}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+
+                                    <button 
+                                        onClick={handleExecuteBulkDispatch}
+                                        className="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-3 rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-purple-600/30 text-sm mt-2"
+                                    >
+                                        <i className="fa-solid fa-bolt"></i>
+                                        <span>تأكيد وإرسال الطلبات الآن عبر API</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* PRINT SLIPS THERMAL MODAL VIEW */}
+                    {isPrintSlipModalOpen && (
+                        <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-50 overflow-y-auto p-4 flex flex-col items-center">
+                            <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl w-full max-w-2xl mb-4 flex justify-between items-center no-print">
+                                <h3 className="font-bold text-slate-100">معاينة بوليصات الشحن للطباعة ({ordersToPrint.length})</h3>
+                                <div className="flex gap-2">
+                                    <button onClick={() => window.print()} className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-xs font-bold transition flex items-center gap-2">
+                                        <i className="fa-solid fa-print"></i>
+                                        <span>طباعة الآن</span>
+                                    </button>
+                                    <button onClick={() => setIsPrintSlipModalOpen(false)} className="bg-slate-800 text-slate-300 px-3 py-2 rounded-lg text-xs font-bold">إغلاق</button>
+                                </div>
+                            </div>
+
+                            {/* Printable Area */}
+                            <div className="space-y-4 w-full max-w-xl text-black">
+                                {ordersToPrint.map(ord => (
+                                    <div key={ord.id} className="bg-white p-6 rounded-lg border-2 border-black space-y-3 font-mono">
+                                        <div className="flex justify-between items-center border-b-2 border-black pb-2">
+                                            <div className="font-bold text-lg">{ord.deliveryCompany || 'EXPRESS LOGISTICS'}</div>
+                                            <div className="text-right text-xs">
+                                                <div>رقم الطلب: <strong>{ord.id}</strong></div>
+                                                <div>التاريخ: {ord.date}</div>
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2 text-xs">
+                                            <div>
+                                                <div className="text-gray-600">المرسل إليه (الزبون):</div>
+                                                <div className="font-bold text-sm">{ord.clientName}</div>
+                                                <div>الهاتف: {ord.phone}</div>
+                                            </div>
+                                            <div>
+                                                <div className="text-gray-600">الوجهة:</div>
+                                                <div className="font-bold">{ord.wilaya}</div>
+                                                <div>{ord.address}</div>
+                                            </div>
+                                        </div>
+                                        <div className="border-t border-b border-black py-2 text-xs">
+                                            <div>المنتج: <strong>{ord.product} ({ord.quantity} قطعة)</strong></div>
+                                        </div>
+                                        <div className="flex justify-between items-center pt-1">
+                                            <div className="text-lg font-extrabold border-2 border-black p-1 rounded">
+                                                COD: {ord.totalAmount} DZD
+                                            </div>
+                                            <div className="text-center font-mono font-bold text-xs">
+                                                [{ord.trackingCode || 'NO-TRACKING'}]
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    <footer className="bg-slate-900 border-t border-slate-800 py-4 text-center text-xs text-slate-500 no-print">
+                        E-Com Pulse DZ Pro &copy; 2026 - لوحة تحكم التجارة الإلكترونية، الموظفين والربط البرمجي
+                    </footer>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
